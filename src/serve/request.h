@@ -51,6 +51,12 @@ struct RequestLimits {
 struct CompletionUsage {
     int prompt_tokens     = 0;
     int completion_tokens = 0;
+    // The subset of prompt_tokens the prefix cache served, so a client can tell a
+    // reused prompt from a recomputed one. OpenAI semantics: a subset, not an
+    // addend. The Anthropic schema deliberately does not emit this -- there
+    // input_tokens *excludes* cache reads, so reporting it would also have to
+    // change what input_tokens means for every existing Messages client.
+    int cached_prompt_tokens = 0;
 };
 
 enum class ContentKind {
