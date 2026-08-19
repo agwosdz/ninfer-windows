@@ -78,6 +78,35 @@ struct DFlashWeights {
     Tensor final_norm;
 };
 
+// DFlash2 (block-diffusion drafter v2) per-layer weights. The `base` member is the
+// DFlash1-shaped layer (q/k/v row views included); v2 layers additionally run two-tap
+// dynamic convolutions on the attention and MLP sublayers. The convolution base kernels
+// are BF16 `[side, tap, hidden]` (checkpoint layout, kept as-is by the converter); the
+// kernel projections are W8 rows
+// `[2 * kernel * (hidden / group), hidden]` (row = group + group_count * (tap + kernel * side)).
+struct DFlash2LayerWeights {
+    DFlashLayerWeights base;
+    Tensor attention_conv_base;
+    Weight attention_conv_projection;
+    Tensor mlp_conv_base;
+    Weight mlp_conv_projection;
+};
+
+// DFlash2 drafter payload: all-sliding-window layers, no private output head (the
+// target head is aliased, as in DFlash1), plus the candidate selector codebooks
+// ([vocab, rank]) and hidden projection ([rank, hidden]) consumed by the on-device
+// lattice build.
+template <std::size_t Layers>
+struct DFlash2Weights {
+    Weight feature_projection;
+    Tensor context_norm;
+    std::array<DFlash2LayerWeights, Layers> layers;
+    Tensor final_norm;
+    Weight selector_predecessor_codebook;
+    Weight selector_successor_codebook;
+    Weight selector_hidden_projection;
+};
+
 template <class FullProjectionPayload, class GdnProjectionPayload, class MainPostMixerPayload,
           class MtpAttentionPayload, class MtpPostMixerPayload, class DFlashPayload,
           std::size_t FullAttentionLayers, std::size_t GdnLayers>

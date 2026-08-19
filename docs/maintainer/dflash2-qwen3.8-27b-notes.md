@@ -1,8 +1,34 @@
 # DFlash2 for Qwen3.8-27B — research notes (WIP)
 
 Branch: `dflash-3.8-27b`. Goal: add DFlash2 support to the `qwen3.8-27b` target
-(shared with `qwen3.6-27b` via `registry.cpp`; both currently have
-`DFlashConfig::supported = false`).
+(shared with `qwen3.6-27b` via `registry.cpp`; the 27B target now defines the full
+`DFlashConfig` v2 geometry; the DFlash2 runtime is off until the decode/verify increment lands).
+
+## 0. Status (validate-first increment)
+
+- Converter: **done and verified**. `tools/convert/qwen3_8_27b/convert_dflash2.py` (profile
+  `groupwise-int-dflash2`, `weights_id = groupwise-int-dflash2`) ran end-to-end on the
+  official Qwen3.8-27B + `z-lab/Qwen3.8-27B-DFlash2` checkpoints: 1190 objects (1184
+  tensors + 6 resources), 20255474176 artifact bytes; all 66 DFlash2 recipes materialized
+  and W8/BF16-encoded.
+- Engine (load path): **done**. `DFlashConfig` v2 geometry is in the 27B `config.h`; the
+  `Qwen38GroupwiseIntDflash2` weights profile loads, binds, and shape-validates the
+  `dflash2/` component (see `qwen3.8-27b-artifact.md` Section 14). Existing `groupwise-int`
+  and `nvfp4` artifacts are unaffected (the dflash2 bind is profile-gated).
+- Engine (runtime): **pending**. `DFlashConfig::supported` stays `false` and
+  `kMaximumDFlashDraftTokens` is 0, so `--spec dflash` is rejected at startup for this
+  target until the v2 runtime lands: two-tap dynamic conv + all-sliding-window draft
+  attention ops, the on-device lattice build (top-16 + codebooks + pad-to-5120 rows), the
+  host lattice path trace (seed ^ 0x85ebca6b, greedy argmax chain or seeded sampling with
+  sparse per-position distributions), the `swa` window parameterized from the cache
+  capacity (v2 window 2048 vs the v1 4096), and the two-phase decode round (draft+lattice
+  graph, host trace, verify).
+- Note: HF republished the Qwen3.8 frontend files on 2026-08-13 (chat template rewritten,
+  `model_max_length` 131072 -> 262144); a fresh download fails the pinned-hash preflight.
+  The verified conversion used the pinned frontend bytes recovered from the existing
+  `qwen3_8_27b.ninfer` artifact. Re-pinning is a conscious decision if converting from a
+  fresh download.
+
 
 ## 1. Inputs required
 
@@ -85,24 +111,39 @@ Branch: `dflash-3.8-27b`. Goal: add DFlash2 support to the `qwen3.8-27b` target
    three selector objects: 73 named tensors (81 entries incl. the `model.`
    prefix handled by mapping).
 
-## 2. Design decisions needed (open)
+## 2. Design decisions (1-4 resolved; 5-7 track the pending runtime increment)
+
+Decisions 1-4 carry their resolutions inline below; items 5-7 list the
+pending work and are the plan of record for the runtime increment.
+
 
 1. **Artifact identity.** 35B precedent: DFlash is baked into the one complete
    product image (no second artifact/profile). 3.8 has *two* registered
    profiles (`groupwise-int`, `nvfp4`). Do both gain a `dflash2/` component, or
    does only one profile carry it? (Converter + docs + binder must agree.)
+   **Resolved:** only the `groupwise-int` family carries the drafter, as the new
+   `groupwise-int-dflash2` profile (`nvfp4` stays drafter-free); `dflash2/` objects bind
+   only under `Qwen38GroupwiseIntDflash2`, so existing artifacts are unaffected.
 2. **Namespace / naming.** `dflash/` is taken by the v1 contract on 35B. Suggest
    `dflash2/` namespace for the 27B target to keep v1 and v2 contracts separate
    even though a given target only ever ships one of them.
+   **Resolved:** `dflash2/` namespace on the 27B target, separate from the 35B `dflash/`
+   v1 contract.
 3. **Codebook placement.** The two codebooks are ~127 MB BF16 each. The host
    selector trace only needs 16 rows of 256-dim vectors per step —
    `ValidateOnly`/host-retained (pinned) is enough and saves ~254 MB VRAM.
    The lattice build (top_k + hidden projection) happens on-device in the
    draft graph; only the path trace moves host-side.
+   **Resolved:** the codebooks are W8-encoded device tensors in the artifact; the host path
+   trace consumes only the lattice rows the device pack produces, so no pinned codebook
+   copy is needed at runtime.
 4. **Backend flag.** Keep `--spec dflash`; let the target's config select v1
    vs v2 semantics (35B → v1, 3.8-27B → v2). Draft-token cap for v2 is
    `block_size - 1 = 7` (v1 stays 15). Needs a per-target max in
    `speculative_options` validation.
+   **Resolved:** `--spec dflash` is kept; the target selects v1 vs v2 semantics. The v2
+   draft cap is `block_size - 1 = 7`, wired through `kMaximumDFlashDraftTokens` (0 in the
+   validate-first increment, 7 with the runtime).
 5. **Engine pieces to add (27B target):**
    - `DFlashConfig` v2 facts (5 sliding layers, window 2048, hidden 5120,
      intermediate 17408, q/kv/head, conv kernel 2 / group 16, selector rank
