@@ -37,6 +37,11 @@ void parse_openai_chat_thinking(const nlohmann::json& body,
                                 std::string* reasoning_effort_param,
                                 const std::string& conflict_param);
 
+// Parse a message's `content` field (string or content-part array) into `turn.content`.
+// A non-empty `allowed_types` rejects parts whose `type` is not listed.
+void parse_content_parts(const nlohmann::json& content, ChatTurn& turn, std::size_t index,
+                         std::vector<std::string> allowed_types = {});
+
 std::optional<bool> parse_openai_preserve_thinking(const nlohmann::json& body);
 
 // llama.cpp webui dialect: /props payload derived from the process configuration.
