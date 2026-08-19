@@ -35,7 +35,7 @@ from tools.artifact.container import (
 from tools.convert.common.quantize import pick_device
 from tools.convert.common.safetensors import ShardReader
 from tools.convert.qwen3_6.common import conversion as family_conversion
-from tools.convert.qwen3_6.common.recipe import SourcePreflight
+from tools.convert.qwen3_6.common.recipe import SourcePreflight, materialize_recipe
 from tools.convert.qwen3_6_27b import convert as qwen3_6_convert
 from tools.convert.qwen3_6_27b import draft_head
 from tools.convert.qwen3_6_27b import recipe as groupwise_recipe
@@ -205,7 +205,7 @@ def materialize_tensor(
     draft: draft_head.DraftHeadContext,
 ) -> torch.Tensor:
     if spec.name.startswith("dflash2/"):
-        tensor = dflash2_recipe.materialize_recipe(
+        tensor = materialize_recipe(
             dflash2_recipe.DFLASH2_RECIPES_BY_NAME[spec.name],
             reader,
         )
