@@ -240,7 +240,7 @@ void propose_batch_impl(DFlashBatchContext& state, qwen3_6::DFlashDecodeState& f
                     {Config::head_dim, Config::query_heads, width, batch_size});
                 if (layer < Config::local_layers) {
                     ops::swa(query_batch, key_batch, value_batch, positions, valid_columns, lanes,
-                             Config::attention_scale,
+                             Config::attention_scale, Config::local_capacity,
                              dflash_state(state).local_layer(static_cast<std::uint32_t>(layer)),
                              envelopes.local, state.execution.work, attention_batch,
                              state.execution.device.stream);

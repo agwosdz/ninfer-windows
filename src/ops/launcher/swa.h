@@ -19,13 +19,14 @@ struct SwaPlan {
     std::int32_t max_context;
 };
 
-[[nodiscard]] SwaPlan swa_resolve_plan(std::int32_t tokens, SwaContextExecutionEnvelope envelope);
+[[nodiscard]] SwaPlan swa_resolve_plan(std::int32_t tokens, std::int32_t window,
+                                          SwaContextExecutionEnvelope envelope);
 [[nodiscard]] const char* swa_route_name(SwaRoute route);
 
 void swa_launch(const Tensor& q, const Tensor& query_k, const Tensor& query_v,
                 const Tensor& positions, const Tensor& valid_columns, const Tensor& lanes,
-                float scale, const CyclicKVCacheLayerView& context, const SwaPlan& plan,
-                Tensor& partial_acc, Tensor& partial_m, Tensor& partial_l, Tensor& out,
-                cudaStream_t stream);
+                float scale, std::int32_t window, const CyclicKVCacheLayerView& context,
+                const SwaPlan& plan, Tensor& partial_acc, Tensor& partial_m, Tensor& partial_l,
+                Tensor& out, cudaStream_t stream);
 
 } // namespace ninfer::ops::detail

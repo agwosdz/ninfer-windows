@@ -124,7 +124,7 @@ void bidirectional_gqa_attention_launch(const Tensor& q, const Tensor& query_k,
                     static_cast<const __nv_bfloat16*>(context.v_pages.data),
                     static_cast<const std::int32_t*>(context.block_tables.data),
                     context.k_pages.ne[2], context.block_tables.ne[0],
-                    context.block_tables.ne[0] * kPagedKVPageSize, 1, scale,
+                    context.block_tables.ne[0] * kPagedKVPageSize, 0, 1, scale,
                     static_cast<__nv_bfloat16*>(partial_acc.data),
                     static_cast<float*>(partial_m.data), static_cast<float*>(partial_l.data),
                     static_cast<__nv_bfloat16*>(out.data));
@@ -152,7 +152,7 @@ void bidirectional_gqa_attention_launch(const Tensor& q, const Tensor& query_k,
                     static_cast<const __nv_bfloat16*>(context.v_pages.data),
                     static_cast<const std::int32_t*>(context.block_tables.data),
                     context.k_pages.ne[2], context.block_tables.ne[0],
-                    context.block_tables.ne[0] * kPagedKVPageSize, plan.split_capacity, scale,
+                    context.block_tables.ne[0] * kPagedKVPageSize, 0, plan.split_capacity, scale,
                     static_cast<__nv_bfloat16*>(partial_acc.data),
                     static_cast<float*>(partial_m.data), static_cast<float*>(partial_l.data),
                     static_cast<__nv_bfloat16*>(out.data));
@@ -164,7 +164,7 @@ void bidirectional_gqa_attention_launch(const Tensor& q, const Tensor& query_k,
                 static_cast<const float*>(partial_l.data),
                 static_cast<const std::int32_t*>(context_lengths.data),
                 static_cast<const std::int32_t*>(valid_columns.data),
-                context.block_tables.ne[0] * kPagedKVPageSize, plan.split_capacity,
+                context.block_tables.ne[0] * kPagedKVPageSize, 0, plan.split_capacity,
                 static_cast<__nv_bfloat16*>(out.data));
             CUDA_CHECK(cudaGetLastError());
         };
