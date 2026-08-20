@@ -16,7 +16,6 @@ namespace {
 constexpr std::int32_t kHeadDim = 128;
 constexpr std::int32_t kQHeads  = 32;
 constexpr std::int32_t kKVHeads = 8;
-constexpr std::int32_t kWindow  = 4096;
 constexpr float kExpectedScale  = 0.08838834764831844055f;
 
 void require_shape(const Tensor& tensor, std::int32_t n0, std::int32_t n1, std::int32_t n2,
@@ -35,9 +34,10 @@ void require_contiguous_nonnull(const Tensor& tensor, const char* op, const char
     }
 }
 
-void validate_context(const CyclicKVCacheLayerView& context, const char* op) {
+void validate_context(const CyclicKVCacheLayerView& context, std::int32_t window, const char* op) {
     if (context.num_kv_heads != kKVHeads || context.head_dim != kHeadDim ||
-        context.capacity != kWindow || context.padded_capacity < context.capacity ||
+        context.capacity != static_cast<std::uint32_t>(window) ||
+        context.padded_capacity != static_cast<std::uint32_t>(window) ||
         context.lane_capacity <= 0) {
         throw std::invalid_argument(std::string(op) + ": invalid cyclic context");
     }
@@ -73,23 +73,26 @@ PartialWorkspace allocate_workspace(Allocator& workspace, std::int32_t tokens, s
 
 } // namespace
 
-std::size_t swa_workspace_capacity_bytes(SwaContextExecutionEnvelope envelope,
+std::size_t swa_workspace_capacity_bytes(std::int32_t window, SwaContextExecutionEnvelope envelope,
                                          std::int32_t min_tokens, std::int32_t max_tokens,
                                          std::int32_t batch_size) {
+    if (window < 0 || (window & (window - 1)) != 0) {
+        throw std::invalid_argument("swa workspace: window must be a power of two");
+    }
     if (min_tokens < 1 || max_tokens < min_tokens || max_tokens > 16 || batch_size < 1 ||
         batch_size > 8 || envelope.min_context > envelope.max_context ||
         envelope.max_context >
             static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max())) {
         throw std::invalid_argument("swa workspace: invalid envelope or token interval");
     }
-    const auto plan = detail::swa_resolve_plan(max_tokens, envelope);
+    const auto plan = detail::swa_resolve_plan(max_tokens, window, envelope);
     WorkspaceLayoutBuilder layout;
     (void)allocate_workspace(layout, max_tokens, plan.split_capacity, batch_size);
     return layout.peak_bytes(1);
 }
 
 void swa(const Tensor& q, const Tensor& query_k, const Tensor& query_v, const Tensor& positions,
-         const Tensor& valid_columns, const Tensor& lanes, float scale,
+         const Tensor& valid_columns, const Tensor& lanes, float scale, std::int32_t window,
          const CyclicKVCacheLayerView& context, SwaContextExecutionEnvelope envelope,
          WorkspaceArena& workspace, Tensor& out, cudaStream_t stream) {
     constexpr const char* op = "swa";
@@ -121,7 +124,10 @@ void swa(const Tensor& q, const Tensor& query_k, const Tensor& query_v, const Te
     require_contiguous_nonnull(valid_columns, op, "valid columns");
     require_contiguous_nonnull(lanes, op, "lanes");
     require_contiguous_nonnull(out, op, "out");
-    validate_context(context, op);
+    if (window < 0 || (window & (window - 1)) != 0) {
+        throw std::invalid_argument("swa: window must be a power of two");
+    }
+    validate_context(context, window, op);
     if (envelope.min_context > envelope.max_context ||
         envelope.max_context >
             static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max())) {
@@ -132,10 +138,10 @@ void swa(const Tensor& q, const Tensor& query_k, const Tensor& query_v, const Te
     }
 
     auto scope               = workspace.scope();
-    const auto plan          = detail::swa_resolve_plan(tokens, envelope);
+    const auto plan          = detail::swa_resolve_plan(tokens, window, envelope);
     PartialWorkspace partial = allocate_workspace(workspace, tokens, plan.split_capacity, batch);
-    detail::swa_launch(q, query_k, query_v, positions, valid_columns, lanes, scale, context, plan,
-                       partial.acc, partial.m, partial.l, out, stream);
+    detail::swa_launch(q, query_k, query_v, positions, valid_columns, lanes, scale, window, context,
+                       plan, partial.acc, partial.m, partial.l, out, stream);
 }
 
 } // namespace ninfer::ops

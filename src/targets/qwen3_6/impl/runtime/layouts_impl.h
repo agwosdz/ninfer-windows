@@ -476,8 +476,9 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
                     auto attention = layout.scope();
                     (void)workspace_recipe::dflash_attention<DFlashConfig>(layout, tokens);
                     scratch(layout,
-                            std::max(ops::swa_workspace_capacity_bytes({0, plan.capacity}, width,
-                                                                       width, batch),
+                            std::max(ops::swa_workspace_capacity_bytes(DFlashConfig::local_capacity,
+                                                                      {0, plan.capacity}, width,
+                                                                      width, batch),
                                      ops::bidirectional_gqa_attention_workspace_capacity_bytes(
                                          {0, plan.capacity}, width, width, batch)));
                     scratch(layout, ops::linear_add_workspace_capacity_bytes(
