@@ -669,21 +669,21 @@ LoadedModelData::LoadedModelData(BindingPlan plan, artifact::MaterializedArtifac
         for (std::size_t layer = 0; layer < DFlashConfig::layers; ++layer) {
             const DFlash2LayerPlan& source = plan.dflash.layers[layer];
             qwen3_6::DFlash2LayerWeights& target = dflash.layers.at(layer);
-            target.base.input_norm = artifact::materialized_tensor(
+            target.input_norm = artifact::materialized_tensor(
                 backing, source.input_norm, NumericFormat::BF16, {DFlashConfig::hidden});
-            target.base.query_key_value = artifact::materialized_weight(
+            target.query_key_value = artifact::materialized_weight(
                 backing, source.query_key_value, NumericFormat::W8G32_F16S,
                 DFlashConfig::query_size + 2 * DFlashConfig::kv_size, DFlashConfig::hidden);
-            target.base.context_key = row_view(
-                target.base.query_key_value, DFlashConfig::query_size, DFlashConfig::kv_size);
-            target.base.context_value = row_view(
-                target.base.query_key_value, DFlashConfig::query_size + DFlashConfig::kv_size,
+            target.context_key = row_view(
+                target.query_key_value, DFlashConfig::query_size, DFlashConfig::kv_size);
+            target.context_value = row_view(
+                target.query_key_value, DFlashConfig::query_size + DFlashConfig::kv_size,
                 DFlashConfig::kv_size);
-            target.base.query_norm = artifact::materialized_tensor(
+            target.query_norm = artifact::materialized_tensor(
                 backing, source.query_norm, NumericFormat::BF16, {DFlashConfig::head_dim});
-            target.base.key_norm = artifact::materialized_tensor(
+            target.key_norm = artifact::materialized_tensor(
                 backing, source.key_norm, NumericFormat::BF16, {DFlashConfig::head_dim});
-            target.base.attention_output = artifact::materialized_weight(
+            target.attention_output = artifact::materialized_weight(
                 backing, source.attention_output, NumericFormat::W8G32_F16S,
                 DFlashConfig::hidden, DFlashConfig::query_size);
             target.attention_conv_base = artifact::materialized_tensor(
@@ -692,12 +692,12 @@ LoadedModelData::LoadedModelData(BindingPlan plan, artifact::MaterializedArtifac
             target.attention_conv_projection = artifact::materialized_weight(
                 backing, source.attention_conv_projection, NumericFormat::W8G32_F16S,
                 DFlashConfig::conv_projection_rows, DFlashConfig::hidden);
-            target.base.post_attention_norm = artifact::materialized_tensor(
+            target.post_attention_norm = artifact::materialized_tensor(
                 backing, source.post_attention_norm, NumericFormat::BF16, {DFlashConfig::hidden});
-            target.base.gate_up = artifact::materialized_weight(
+            target.gate_up = artifact::materialized_weight(
                 backing, source.gate_up, NumericFormat::W8G32_F16S,
                 2 * DFlashConfig::intermediate, DFlashConfig::hidden);
-            target.base.down = artifact::materialized_weight(
+            target.down = artifact::materialized_weight(
                 backing, source.down, NumericFormat::W8G32_F16S, DFlashConfig::hidden, DFlashConfig::intermediate);
             target.mlp_conv_base = artifact::materialized_tensor(
                 backing, source.mlp_conv_base, NumericFormat::BF16,

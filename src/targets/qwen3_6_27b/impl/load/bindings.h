@@ -137,7 +137,6 @@ struct BindingPlan {
     qwen3_6::FrontendResourcePlan frontend;
     qwen3_6::StartupFeatures features;
     WeightsProfile weights_profile;
-    WeightsProfile weights_profile;
 
     WeightPlan token_embedding;
     std::array<TextLayerPlan, kTextLayers> text_layers;

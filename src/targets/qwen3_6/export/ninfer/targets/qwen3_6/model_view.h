@@ -78,14 +78,14 @@ struct DFlashWeights {
     Tensor final_norm;
 };
 
-// DFlash2 (block-diffusion drafter v2) per-layer weights. The `base` member is the
-// DFlash1-shaped layer (q/k/v row views included); v2 layers additionally run two-tap
-// dynamic convolutions on the attention and MLP sublayers. The convolution base kernels
-// are BF16 `[side, tap, hidden]` (checkpoint layout, kept as-is by the converter); the
-// kernel projections are W8 rows
+// DFlash2 (block-diffusion drafter v2) per-layer weights. Inherits the DFlash1 layer
+// shape (a v2 layer IS a v1 layer: same norms/projections, so the shared runtime's
+// v1-shaped dflash code compiles unchanged against the v2 payload); v2 layers
+// additionally run two-tap dynamic convolutions on the attention and MLP sublayers.
+// The convolution base kernels are BF16 `[side, tap, hidden]` (checkpoint layout,
+// kept as-is by the converter); the kernel projections are W8 rows
 // `[2 * kernel * (hidden / group), hidden]` (row = group + group_count * (tap + kernel * side)).
-struct DFlash2LayerWeights {
-    DFlashLayerWeights base;
+struct DFlash2LayerWeights : DFlashLayerWeights {
     Tensor attention_conv_base;
     Weight attention_conv_projection;
     Tensor mlp_conv_base;
