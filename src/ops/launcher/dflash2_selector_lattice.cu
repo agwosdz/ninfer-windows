@@ -46,7 +46,7 @@ float sel_key_value(unsigned long long key) {
     return __uint_as_float(u);
 }
 
-__global__ void dflash2_select_candidates_kernel(const float* __restrict__ logits,
+__global__ void dflash2_select_candidates_kernel(const __nv_bfloat16* __restrict__ logits,
                                                  std::int32_t vocab, std::int32_t tokens,
                                                  std::int32_t* __restrict__ out_ids,
                                                  float* __restrict__ out_values) {
@@ -54,7 +54,7 @@ __global__ void dflash2_select_candidates_kernel(const float* __restrict__ logit
     (void)tokens;
 
     const std::int32_t t = blockIdx.x;
-    const float* col = logits + static_cast<std::int64_t>(t) * vocab;
+    const __nv_bfloat16* col = logits + static_cast<std::int64_t>(t) * vocab;
 
     // Per-thread private top-k (value desc, lower id first on ties).
     float my_val[k];
@@ -66,7 +66,7 @@ __global__ void dflash2_select_candidates_kernel(const float* __restrict__ logit
         my_id[i] = 0;
     }
     for (std::int32_t id = threadIdx.x; id < vocab; id += kSelThreads) {
-        const float v = col[id];
+        const float v = __bfloat162float(col[id]);
         if (v <= my_val[k - 1]) { continue; }  // cannot enter the top-k
         std::int32_t slot = k - 1;
         while (slot > 0 && v > my_val[slot - 1]) {
@@ -249,7 +249,7 @@ void dflash2_select_candidates_launch(const Tensor& logits, Tensor& out_ids, Ten
     const std::int32_t tokens = logits.ne[1];
     const std::int32_t vocab = logits.ne[0];
     dflash2_select_candidates_kernel<<<tokens, kSelThreads, 0, stream>>>(
-        static_cast<const float*>(logits.data), vocab, tokens,
+        static_cast<const __nv_bfloat16*>(logits.data), vocab, tokens,
         static_cast<std::int32_t*>(out_ids.data), static_cast<float*>(out_values.data));
 }
 

@@ -23,10 +23,11 @@ inline constexpr std::int32_t kDFlash2SelectorRank = 256;
  *   out_values[s, t] = its logit
  *
  * Candidates are sorted by value descending; a lower token id breaks ties.
- * `logits` is contiguous FP32 [vocab, T] (the caller materializes the draft
- * output-head logits in FP32 first); T > 0 and vocab > 16. `out_ids` is
- * I32 [16, T], `out_values` is FP32 [16, T]. Selection is exact (FP32
- * compare, integer ids): the result is deterministic for a given input.
+ * `logits` is contiguous BF16 [vocab, T] (the draft output-head logits as
+ * emitted by ops::linear; values are read in FP32). T > 0 and vocab > 16.
+ * `out_ids` is I32 [16, T], `out_values` is FP32 [16, T] (converted on read).
+ * Selection compares the BF16 values in FP32; lower token ids break ties, so
+ * the result is deterministic for a given input.
  */
 void dflash2_select_candidates(const Tensor& logits, Tensor& out_ids, Tensor& out_values,
                                cudaStream_t stream);
