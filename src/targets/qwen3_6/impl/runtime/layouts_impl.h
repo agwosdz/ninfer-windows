@@ -157,9 +157,19 @@ PersistentLayout persistent_layout(const SequencePlanImpl& plan) {
                 builder, DFlashConfig::local_layers, DFlashConfig::local_capacity,
                 DFlashConfig::kv_heads, DFlashConfig::head_dim,
                 static_cast<std::int32_t>(plan.max_concurrency));
+            // v2 (DFlash2) drafter is all-sliding-window (full_layers == 0) and never
+            // writes the full-context KV pool. Keep a one-page structural stub so the
+            // shared DFlashPersistentState and the engine's KV-bundle contract (a DFlash
+            // backend always owns a pool) still hold; v1 keeps its full-context pool.
+            std::uint32_t full_page_groups   = physical_pages;
+            std::uint32_t full_logical_pages = logical_pages;
+            if (DFlashConfig::full_layers == 0) {
+                full_page_groups   = 1;
+                full_logical_pages = 1;
+            }
             PagedKVPoolSpec full_pool{
-                .page_group_count      = physical_pages,
-                .logical_page_capacity = logical_pages,
+                .page_group_count      = full_page_groups,
+                .logical_page_capacity = full_logical_pages,
                 .table_rows            = static_cast<std::int32_t>(plan.max_concurrency),
                 .plane_order           = PagedKVPlaneOrder::HeadMajor,
                 .planes =
