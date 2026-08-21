@@ -601,7 +601,7 @@ void propose_batch_v2_impl(DFlashBatchContext& state, qwen3_6::DFlashDecodeState
         Tensor candidates = state.execution.work.alloc(
             DType::I32, {Config::selector_top_k, columns});
         Tensor unary = state.execution.work.alloc(
-            DType::F32, {Config::selector_top_k, columns});
+            DType::FP32, {Config::selector_top_k, columns});
         ops::dflash2_select_candidates(logits, candidates, unary,
                                        state.execution.device.stream);
 
@@ -641,7 +641,7 @@ void propose_batch_v2_impl(DFlashBatchContext& state, qwen3_6::DFlashDecodeState
 
         // Lattice: [hidden, columns] f32 rows
         // [top_k ids | top_k×top_k scores | zero-pad to hidden]
-        Tensor lattice = state.execution.work.alloc(DType::F32, {Config::hidden, columns});
+        Tensor lattice = state.execution.work.alloc(DType::FP32, {Config::hidden, columns});
         ops::dflash2_selector_lattice(hidden_pos, successor_3d, predecessor_3d, candidates, unary,
                                       Config::hidden, Config::block_size, lattice,
                                       state.execution.device.stream);

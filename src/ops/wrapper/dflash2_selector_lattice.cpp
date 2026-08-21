@@ -40,9 +40,9 @@ void dflash2_select_candidates(const Tensor& logits, Tensor& out_ids, Tensor& ou
     if (logits.dtype != DType::BF16) {
         throw std::invalid_argument("dflash2_select_candidates: logits must be BF16");
     }
-    if (out_ids.dtype != DType::I32 || out_values.dtype != DType::F32) {
+    if (out_ids.dtype != DType::I32 || out_values.dtype != DType::FP32) {
         throw std::invalid_argument(
-            "dflash2_select_candidates: out_ids must be I32 and out_values F32");
+            "dflash2_select_candidates: out_ids must be I32 and out_values FP32");
     }
     const std::int32_t vocab = logits.ne[0];
     const std::int32_t tokens = logits.ne[1];
@@ -77,9 +77,9 @@ void dflash2_selector_lattice(const Tensor& hidden_pos, const Tensor& successor,
         throw std::invalid_argument(
             "dflash2_selector_lattice: hidden_pos/successor/predecessor must be BF16");
     }
-    if (candidates.dtype != DType::I32 || unary.dtype != DType::F32 || out.dtype != DType::F32) {
+    if (candidates.dtype != DType::I32 || unary.dtype != DType::FP32 || out.dtype != DType::FP32) {
         throw std::invalid_argument(
-            "dflash2_selector_lattice: candidates must be I32, unary/out F32");
+            "dflash2_selector_lattice: candidates must be I32, unary/out FP32");
     }
 
     const std::int32_t tokens = hidden_pos.ne[1];
