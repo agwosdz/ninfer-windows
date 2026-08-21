@@ -565,12 +565,12 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
                 matrix(layout, DType::BF16, DFlashConfig::hidden, tokens);
                 matrix(layout, DType::BF16, TextConfig::output_rows, tokens);
                 matrix(layout, DType::I32, DFlashConfig::selector_top_k, tokens);
-                matrix(layout, DType::F32, DFlashConfig::selector_top_k, tokens);
+                matrix(layout, DType::FP32, DFlashConfig::selector_top_k, tokens);
                 matrix(layout, DType::BF16, DFlashConfig::selector_rank, tokens);
                 matrix(layout, DType::BF16, DFlashConfig::selector_rank, DFlashConfig::selector_top_k * tokens);
                 matrix(layout, DType::I32, DFlashConfig::selector_top_k, tokens);
                 matrix(layout, DType::BF16, DFlashConfig::selector_rank, DFlashConfig::selector_top_k * tokens);
-                matrix(layout, DType::F32, DFlashConfig::hidden, tokens);
+                matrix(layout, DType::FP32, DFlashConfig::hidden, tokens);
                 return finish(layout);
             };
 
