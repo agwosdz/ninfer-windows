@@ -192,5 +192,12 @@ void capture_dflash_decode_batch(DFlashBatchContext& state, std::int32_t batch_s
 void dflash_decode_batch(DFlashBatchContext& state, std::int32_t batch_size, std::uint32_t k,
                          DFlashEnvelopes envelopes, ops::GqaExecutionEnvelope target_envelope,
                          DecodeGraphExecutable* executable);
+void capture_dflash_decode_batch_v2(DFlashBatchContext& state, std::int32_t batch_size,
+                                    std::uint32_t k, DFlashEnvelopes envelopes,
+                                    ops::GqaExecutionEnvelope target_envelope,
+                                    DecodeGraphDefinition& definition);
+void dflash_decode_batch_v2(DFlashBatchContext& state, std::int32_t batch_size, std::uint32_t k,
+                            DFlashEnvelopes envelopes, ops::GqaExecutionEnvelope target_envelope,
+                            DecodeGraphExecutable* executable);
 
 } // namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS::schedule

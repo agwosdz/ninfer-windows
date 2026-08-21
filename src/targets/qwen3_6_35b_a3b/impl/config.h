@@ -70,6 +70,7 @@ struct VisionConfig : qwen3_6::VisionBackboneConfig {
 
 struct DFlashConfig {
     static constexpr bool supported        = true;
+    static constexpr bool is_v2            = false;
     static constexpr int layers            = 6;
     static constexpr int local_layers      = 5;
     static constexpr int feature_layers    = 8;
