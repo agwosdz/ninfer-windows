@@ -463,7 +463,7 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
     }
 
     if (plan.features.dflash()) {
-        if constexpr (!Variant::supports_dflash) {
+        if constexpr (!Variant::supports_dflash && !Variant::DFlashConfig::is_v2) {
             throw std::logic_error("unsupported target reached DFlash scratch planning");
         } else {
             const auto dflash_context_capacity = [&](std::int32_t tokens, bool compact_input) {
@@ -516,6 +516,58 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
             };
 
             out.dflash_context = dflash_context_capacity(chunk, false);
+            // v2 (DFlash2) proposal scratch: reuses the v1 dflash_attention /
+            // dflash_mlp recipes and swa / linear_swiglu scratch shapes, plus the
+            // v2 raw-allocated buffers (conv-dyn projections, two-tap conv outputs,
+            // ffn_inp, selector codebook gathers, the packed lattice rows) and the
+            // aliased target output head over the full block (v2 has no private head).
+            const auto dflash2_proposal_capacity = [&](std::int32_t width, std::int32_t batch) {
+                WorkspaceLayoutBuilder layout;
+                const std::int32_t tokens = width * batch;
+                // Persistent block buffers: input embeddings + running state.
+                matrix(layout, DType::BF16, DFlashConfig::hidden, tokens);
+                matrix(layout, DType::BF16, DFlashConfig::hidden, tokens);
+                {
+                    auto layer = layout.scope();
+                    (void)workspace_recipe::dflash_attention<DFlashConfig>(layout, tokens);
+                    // attn_dynamic = linear(noise_norm, attn_conv_proj).
+                    matrix(layout, DType::BF16, DFlashConfig::conv_projection_rows, tokens);
+                    // noise_conv = two-tap dynamic conv(side=0) of noise_norm.
+                    matrix(layout, DType::BF16, DFlashConfig::hidden, tokens);
+                    scratch(layout, ops::swa_workspace_capacity_bytes(
+                        DFlashConfig::local_capacity, {0, plan.capacity}, width, width, batch));
+                    // attn_out / attn_out_conv (two-tap conv(side=1)) / ffn_inp.
+                    matrix(layout, DType::BF16, DFlashConfig::hidden, tokens);
+                    matrix(layout, DType::BF16, DFlashConfig::hidden, tokens);
+                    matrix(layout, DType::BF16, DFlashConfig::hidden, tokens);
+                    {
+                        auto mlp = layout.scope();
+                        (void)workspace_recipe::dflash_mlp<DFlashConfig>(layout, tokens);
+                        // ffn_dynamic = linear(ffn_norm, mlp_conv_proj).
+                        matrix(layout, DType::BF16, DFlashConfig::conv_projection_rows, tokens);
+                        // ffn_conv = two-tap dynamic conv(side=0) of ffn_norm.
+                        matrix(layout, DType::BF16, DFlashConfig::hidden, tokens);
+                        scratch(layout, ops::linear_swiglu_workspace_capacity_bytes(
+                            QType::W8G32_F16S, 2 * DFlashConfig::intermediate, DFlashConfig::hidden,
+                            tokens, tokens));
+                        // mlp_out / mlp_out_conv (two-tap conv(side=1)).
+                        matrix(layout, DType::BF16, DFlashConfig::hidden, tokens);
+                        matrix(layout, DType::BF16, DFlashConfig::hidden, tokens);
+                    }
+                }
+                // Selector stage + final head (tail buffers coexist in the arena).
+                matrix(layout, DType::BF16, DFlashConfig::hidden, tokens);
+                matrix(layout, DType::BF16, TextConfig::output_rows, tokens);
+                matrix(layout, DType::I32, DFlashConfig::selector_top_k, tokens);
+                matrix(layout, DType::F32, DFlashConfig::selector_top_k, tokens);
+                matrix(layout, DType::BF16, DFlashConfig::selector_rank, tokens);
+                matrix(layout, DType::BF16, DFlashConfig::selector_rank, DFlashConfig::selector_top_k * tokens);
+                matrix(layout, DType::I32, DFlashConfig::selector_top_k, tokens);
+                matrix(layout, DType::BF16, DFlashConfig::selector_rank, DFlashConfig::selector_top_k * tokens);
+                matrix(layout, DType::F32, DFlashConfig::hidden, tokens);
+                return finish(layout);
+            };
+
             for (std::int32_t batch = 1; batch <= static_cast<std::int32_t>(plan.max_concurrency);
                  ++batch) {
                 const std::int32_t aggregate = verify * batch;
@@ -526,7 +578,12 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
                 const std::size_t accept =
                     ops::speculative_accept_greedy_drafts_workspace_capacity_bytes(
                         TextConfig::token_domain, drafts, drafts, batch, batch);
-                const std::size_t proposal = dflash_proposal_capacity(verify, batch);
+                std::size_t proposal;
+                if constexpr (Variant::DFlashConfig::is_v2) {
+                    proposal = dflash2_proposal_capacity(verify, batch);
+                } else {
+                    proposal = dflash_proposal_capacity(verify, batch);
+                }
                 out.dflash_round           = std::max({out.dflash_round, finish(target), accept,
                                                        dflash_context_capacity(aggregate, true), proposal});
             }
@@ -631,6 +688,15 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
     impl->proposal_head       = inputs.proposal_head;
     impl->features            = inputs.features;
     impl->use_cuda_graph      = inputs.use_cuda_graph;
+    // v2 (DFlash2) is a block-diffusion drafter: it always proposes the full block
+    // (width = k + 1 = block_size columns, so k = block_size - 1) and runs EAGER,
+    // because its round contains a host greedy path-trace over the packed lattice
+    // rows that cannot be captured in a CUDA Graph. Force both for v2.
+    if constexpr (Variant::DFlashConfig::is_v2) {
+        static_assert(Variant::DFlashConfig::block_size >= 2);
+        impl->draft_window = Variant::DFlashConfig::block_size - 1;
+        impl->use_cuda_graph = false;
+    }
     impl->device              = inputs.device;
     impl->kv_dtype            = inputs.kv_dtype;
     impl->kv_quant_group      = inputs.kv_quant_group;
