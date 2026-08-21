@@ -78,7 +78,7 @@ struct VisionConfig : qwen3_6::VisionBackboneConfig {
 // an all-local cyclic cache (there is no full-context layer), and each layer
 // runs two-tap dynamic convolutions plus a top-16 candidate selector lattice.
 struct DFlashConfig {
-    static constexpr bool supported        = false;
+    static constexpr bool supported        = true;
     static constexpr bool is_v2            = true;
     static constexpr int layers            = 5;
     static constexpr int local_layers      = 5;
@@ -122,7 +122,7 @@ inline constexpr float kAttentionScale                   = 0.0625F;
 inline constexpr float kGdnScale                         = 0.08838834764831845F;
 inline constexpr std::uint32_t kPrefillChunkAlignment    = 128;
 inline constexpr std::uint32_t kMaximumMtpDraftTokens    = 5;
-inline constexpr std::uint32_t kMaximumDFlashDraftTokens = 0;  // validate-first: the v2 decode/verify runtime is not implemented yet; this becomes DFlashConfig::block_size - 1 (7) with that increment
+inline constexpr std::uint32_t kMaximumDFlashDraftTokens = 7;  // v2 drafter: DFlashConfig::block_size - 1 = 7 draft tokens per verify step
 inline constexpr std::uint32_t kNativeContext            = 262144;
 
 } // namespace ninfer::targets::qwen3_6_27b::detail

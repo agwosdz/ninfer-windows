@@ -850,9 +850,11 @@ from `z-lab/Qwen3.8-27B-DFlash2`. The converter validates both checkpoints, the 
 resources, the complete object plan, and the numeric recipes before writing, then writes the
 sibling `qwen3_8_27b_groupwise-int-dflash2.ninfer.conversion.json` report.
 
-The target loads this artifact through the `Qwen38GroupwiseIntDflash2` weights profile and binds
-the `dflash2/` component (ValidateOnly unless speculative DFlash is requested). The DFlash2 decode
-and verify runtime (two-tap dynamic convolutions, all-sliding-window draft attention, candidate
-selector lattice, and host lattice path trace) is not yet implemented; until it lands, the profile
-binds and shape-validates the drafter but the runtime rejects `--spec dflash` for this target
-(`kMaximumDFlashDraftTokens` is 0). See [`dflash2-qwen3.8-27b-notes.md`](dflash2-qwen3.8-27b-notes.md).
+The target loads this artifact through the `Qwen38GroupwiseIntDflash2` weights profile and
+binds the `dflash2/` component. The DFlash2 decode and verify runtime is live: the two-tap
+dynamic convolutions, the all-sliding-window draft attention (window 2048), the on-device
+candidate selector lattice build, and the host lattice path trace run in the v2 decode round
+(eager, no CUDA graph capture). `--spec dflash` accepts a draft window in [1, 7] for this
+target (block size 8); larger windows are rejected at startup.
+
+See [`dflash2-qwen3.8-27b-notes.md`](dflash2-qwen3.8-27b-notes.md).

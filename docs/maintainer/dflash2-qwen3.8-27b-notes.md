@@ -2,7 +2,7 @@
 
 Branch: `dflash-3.8-27b`. Goal: add DFlash2 support to the `qwen3.8-27b` target
 (shared with `qwen3.6-27b` via `registry.cpp`; the 27B target now defines the full
-`DFlashConfig` v2 geometry; the DFlash2 runtime is off until the decode/verify increment lands).
+`DFlashConfig` v2 geometry; the DFlash2 v2 decode/verify runtime is enabled).
 
 ## 0. Status (validate-first increment)
 
@@ -15,14 +15,14 @@ Branch: `dflash-3.8-27b`. Goal: add DFlash2 support to the `qwen3.8-27b` target
   `Qwen38GroupwiseIntDflash2` weights profile loads, binds, and shape-validates the
   `dflash2/` component (see `qwen3.8-27b-artifact.md` Section 14). Existing `groupwise-int`
   and `nvfp4` artifacts are unaffected (the dflash2 bind is profile-gated).
-- Engine (runtime): **pending**. `DFlashConfig::supported` stays `false` and
-  `kMaximumDFlashDraftTokens` is 0, so `--spec dflash` is rejected at startup for this
-  target until the v2 runtime lands: two-tap dynamic conv + all-sliding-window draft
-  attention ops, the on-device lattice build (top-16 + codebooks + pad-to-5120 rows), the
-  host lattice path trace (seed ^ 0x85ebca6b, greedy argmax chain or seeded sampling with
-  sparse per-position distributions), the `swa` window parameterized from the cache
-  capacity (v2 window 2048 vs the v1 4096), and the two-phase decode round (draft+lattice
-  graph, host trace, verify).
+- Engine (runtime): **done and enabled** (this increment). `DFlashConfig::supported` is `true`
+  and `kMaximumDFlashDraftTokens` is 7 (block size 8 minus 1), so `--spec dflash` starts the v2
+  drafter for this target: two-tap dynamic conv + all-sliding-window (window 2048) draft
+  attention, the on-device candidate selector lattice build (top-16 + codebooks + pad-to-5120
+  rows), and the host lattice path trace (seed ^ 0x85ebca6b, greedy argmax chain or seeded
+  sampling with sparse per-position distributions). The v2 decode round runs eager (no CUDA
+  graph capture; the drafter owns its all-local 2048-window cache, not the target KV). A
+  DFlash draft window outside [1, 7] is rejected at startup.
 - Note: HF republished the Qwen3.8 frontend files on 2026-08-13 (chat template rewritten,
   `model_max_length` 131072 -> 262144); a fresh download fails the pinned-hash preflight.
   The verified conversion used the pinned frontend bytes recovered from the existing
