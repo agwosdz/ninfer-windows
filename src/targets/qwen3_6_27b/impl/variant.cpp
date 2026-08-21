@@ -37,6 +37,37 @@ graph_profiles_through(std::uint32_t max_frontier,
     return out;
 }
 
+std::vector<GraphExecutionProfile> dflash_base_profiles(std::uint32_t capacity,
+                                                        std::uint32_t draft_window) {
+    if (draft_window == 0 || capacity == 0) { return {}; }
+    const std::uint32_t block        = draft_window + 1;
+    const std::uint32_t max_frontier = capacity - 1;
+    std::vector<std::uint32_t> ends{
+        96U, 127U, 511U, 1023U, 2047U, 4095U, 8191U, 16383U, 32767U, 65536U, 131072U, 196608U,
+    };
+    const auto add_target_boundary = [&](std::uint32_t visible_end) {
+        if (visible_end >= block) { ends.push_back(visible_end - block); }
+    };
+    for (const std::uint32_t visible_end : {128U, 512U, 2048U, 4096U, 8198U, 16390U, 32768U}) {
+        add_target_boundary(visible_end);
+    }
+    if (draft_window >= 6 && draft_window <= 15) {
+        add_target_boundary(draft_window <= 11 ? 512U : 1024U);
+    }
+    std::sort(ends.begin(), ends.end());
+    ends.erase(std::unique(ends.begin(), ends.end()), ends.end());
+    return graph_profiles_through(max_frontier, ends);
+}
+
+bool dflash_target_uses_chunked_small_t(std::uint32_t draft_window, std::uint32_t batch_size,
+                                        std::uint32_t max_visible_keys) {
+    const std::uint32_t tokens = draft_window + 1;
+    if (tokens <= 6) { return false; }
+    if (batch_size > 1) { return true; }
+    const std::uint32_t prompt_visible_limit = tokens <= 12 ? 512U : 1024U;
+    return max_visible_keys > prompt_visible_limit;
+}
+
 void validate_token_interval(std::int32_t first, std::int32_t last) {
     if (first <= 0 || last < first) {
         throw std::invalid_argument("invalid target leaf token interval");
@@ -150,9 +181,23 @@ std::vector<GraphExecutionProfile> Variant::mtp_graph_profiles(std::uint32_t cap
     return graph_profiles_through(capacity - 1, ends);
 }
 
-std::vector<GraphExecutionProfile> Variant::dflash_graph_profiles(std::uint32_t, std::uint32_t,
-                                                                  std::uint32_t) {
-    return {};
+std::vector<GraphExecutionProfile> Variant::dflash_graph_profiles(std::uint32_t capacity,
+                                                                  std::uint32_t draft_window,
+                                                                  std::uint32_t batch_size) {
+    // v2 decode is eager (use_cuda_graph is forced false for the DFlash2
+    // drafter), so this feeds only the CUDA-graph pass, which v2 skips; the
+    // topology policy still documents the capture classes should the runtime
+    // change. Shape mirrors the 35B v1 drafter profile ladder.
+    std::vector<GraphExecutionProfile> profiles = dflash_base_profiles(capacity, draft_window);
+    for (GraphExecutionProfile& profile : profiles) {
+        const std::uint32_t target_max = static_cast<std::uint32_t>(std::min<std::uint64_t>(
+            capacity, static_cast<std::uint64_t>(profile.max) + draft_window + 1ULL));
+        const bool split_swa           = profile.max > 96U;
+        const bool chunked_target =
+            dflash_target_uses_chunked_small_t(draft_window, batch_size, target_max);
+        profile.topology_class = (chunked_target ? 2U : 0U) | (split_swa ? 1U : 0U);
+    }
+    return profiles;
 }
 
 void Variant::attention_projection(const Tensor& hidden,
