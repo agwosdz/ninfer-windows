@@ -88,7 +88,7 @@ template <class V, class Context>
 void append_context_impl(Context& state, const Tensor& features, const Tensor& positions,
                          const Tensor& commit_counts, const Tensor& lanes, const Tensor& table_rows,
                          ops::KVCacheAppendPrefixExecutionEnvelope envelope) {
-    if constexpr (!V::supports_dflash) {
+    if constexpr (!V::supports_dflash && !V::DFlashConfig::is_v2) {
         throw std::logic_error("DFlash context append is unavailable for this target");
     } else {
         using Config               = typename V::DFlashConfig;
@@ -150,21 +150,54 @@ void append_context_impl(Context& state, const Tensor& features, const Tensor& p
             Tensor layer_positions  = local_layer && replace_local_window
                                           ? positions.slice(0, local_offset, local_width)
                                           : positions;
-            auto layer_roots =
-                workspace_recipe::dflash_context_layer<Config>(state.execution.work, layer_columns);
-            Tensor key_raw =
-                layer_roots.key_raw.view({Config::head_dim, Config::kv_heads, layer_columns});
-            Tensor value =
-                layer_roots.value.view({Config::head_dim, Config::kv_heads, layer_columns});
-            Tensor key_flat   = key_raw.view({Config::kv_size, layer_columns});
-            Tensor value_flat = value.view({Config::kv_size, layer_columns});
-            ops::linear_pair(layer_context, weight.context_key, weight.context_value, key_flat,
-                             value_flat, state.execution.device.stream);
-            Tensor key = layer_roots.key.view({Config::head_dim, Config::kv_heads, layer_columns});
-            ops::rmsnorm(key_raw, weight.key_norm, Config::rms_epsilon, false, key,
-                         state.execution.device.stream);
-            ops::rope(layer_positions.view({layer_columns}), Config::head_dim, Config::rope_theta,
-                      key, state.execution.device.stream);
+            Tensor key;
+            Tensor value;
+            if constexpr (Config::is_v2) {
+                auto attn_roots =
+                    workspace_recipe::dflash_attention<Config>(state.execution.work, layer_columns);
+                ops::rmsnorm(layer_context, weight.input_norm, Config::rms_epsilon, false,
+                             attn_roots.hidden, state.execution.device.stream);
+                Tensor attn_dynamic = state.execution.work.alloc(
+                    DType::BF16, {Config::conv_projection_rows, layer_columns});
+                ops::linear(attn_roots.hidden, weight.attention_conv_projection, attn_dynamic,
+                            state.execution.device.stream);
+                Tensor noise_conv = state.execution.work.alloc(
+                    DType::BF16, {Config::hidden, layer_columns});
+                ops::dflash2_dynamic_conv(attn_roots.hidden, attn_dynamic,
+                                          weight.attention_conv_base, 0, layer_width, noise_conv,
+                                          state.execution.device.stream);
+                Tensor query_raw =
+                    attn_roots.query_raw.view({Config::head_dim, Config::query_heads, layer_columns});
+                Tensor key_raw =
+                    attn_roots.key_raw.view({Config::head_dim, Config::kv_heads, layer_columns});
+                value = attn_roots.value.view({Config::head_dim, Config::kv_heads, layer_columns});
+                ops::attn_input_proj(noise_conv, weight.query_key_value,
+                                     query_raw.view({Config::query_size, layer_columns}),
+                                     key_raw.view({Config::kv_size, layer_columns}),
+                                     value.view({Config::kv_size, layer_columns}),
+                                     state.execution.device.stream);
+                key = attn_roots.key.view({Config::head_dim, Config::kv_heads, layer_columns});
+                ops::rmsnorm(key_raw, weight.key_norm, Config::rms_epsilon, false, key,
+                             state.execution.device.stream);
+                ops::rope(layer_positions.view({layer_columns}), Config::head_dim, Config::rope_theta,
+                          key, state.execution.device.stream);
+            } else {
+                auto layer_roots =
+                    workspace_recipe::dflash_context_layer<Config>(state.execution.work, layer_columns);
+                Tensor key_raw =
+                    layer_roots.key_raw.view({Config::head_dim, Config::kv_heads, layer_columns});
+                value =
+                    layer_roots.value.view({Config::head_dim, Config::kv_heads, layer_columns});
+                Tensor key_flat   = key_raw.view({Config::kv_size, layer_columns});
+                Tensor value_flat = value.view({Config::kv_size, layer_columns});
+                ops::linear_pair(layer_context, weight.context_key, weight.context_value, key_flat,
+                                 value_flat, state.execution.device.stream);
+                key = layer_roots.key.view({Config::head_dim, Config::kv_heads, layer_columns});
+                ops::rmsnorm(key_raw, weight.key_norm, Config::rms_epsilon, false, key,
+                             state.execution.device.stream);
+                ops::rope(layer_positions.view({layer_columns}), Config::head_dim, Config::rope_theta,
+                          key, state.execution.device.stream);
+            }
             Tensor key_batch = key.view({Config::head_dim, Config::kv_heads, layer_width, batch});
             Tensor value_batch =
                 value.view({Config::head_dim, Config::kv_heads, layer_width, batch});
