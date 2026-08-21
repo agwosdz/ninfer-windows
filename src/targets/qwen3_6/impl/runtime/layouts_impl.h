@@ -474,7 +474,13 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
                 (void)workspace_recipe::dflash_context<DFlashConfig>(layout, tokens);
                 {
                     auto layer = layout.scope();
-                    (void)workspace_recipe::dflash_context_layer<DFlashConfig>(layout, tokens);
+                    if constexpr (DFlashConfig::is_v2) {
+                        (void)workspace_recipe::dflash_attention<DFlashConfig>(layout, tokens);
+                        matrix(layout, DType::BF16, DFlashConfig::conv_projection_rows, tokens);
+                        matrix(layout, DType::BF16, DFlashConfig::hidden, tokens);
+                    } else {
+                        (void)workspace_recipe::dflash_context_layer<DFlashConfig>(layout, tokens);
+                    }
                 }
                 return finish(layout);
             };
