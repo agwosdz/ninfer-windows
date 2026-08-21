@@ -23,7 +23,6 @@ __global__ void dflash2_predecessor_ids_kernel(const std::int32_t* __restrict__ 
     const std::int64_t total = static_cast<std::int64_t>(top_k) * tokens;
     for (std::int64_t idx = blockIdx.x * blockDim.x + threadIdx.x; idx < total;
          idx += static_cast<std::int64_t>(blockDim.x) * gridDim.x) {
-        const std::int32_t k = static_cast<std::int32_t>(idx / tokens);
         const std::int32_t t = static_cast<std::int32_t>(idx % tokens);
         const std::int32_t pos = t % block_tokens;
         if (pos == 0) {

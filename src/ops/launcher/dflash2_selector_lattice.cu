@@ -30,17 +30,17 @@ constexpr std::int32_t kSelThreads = 128;
 // key keeps this order in the high 32 bits (so the descending sort ranks
 // larger logits first) and inverts the token id in the low 32 bits so lower
 // ids break ties.
-unsigned float_key(float value) {
+__device__ unsigned float_key(float value) {
     const unsigned u = __float_as_uint(value);
     return (u & 0x80000000u) ? ~u : (u ^ 0x80000000u);
 }
 
-unsigned long long sel_key(float value, std::int32_t id) {
+__device__ unsigned long long sel_key(float value, std::int32_t id) {
     return (static_cast<unsigned long long>(float_key(value)) << 32) |
            static_cast<unsigned>(0x7fffffffu - (id & 0x7fffffff));
 }
 
-float sel_key_value(unsigned long long key) {
+__device__ float sel_key_value(unsigned long long key) {
     const unsigned fk = static_cast<unsigned>(key >> 32);
     const unsigned u = (fk & 0x80000000u) ? ~fk : (fk ^ 0x80000000u);
     return __uint_as_float(u);
