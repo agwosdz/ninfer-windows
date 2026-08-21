@@ -73,6 +73,7 @@ struct DFlashConfig {
     static constexpr bool is_v2            = false;
     static constexpr int layers            = 6;
     static constexpr int local_layers      = 5;
+    static constexpr int full_layers       = layers - local_layers;  // v1 drafter: one full-context layer
     static constexpr int feature_layers    = 8;
     static constexpr int feature_rows      = feature_layers * TextConfig::hidden;
     static constexpr int hidden            = TextConfig::hidden;
