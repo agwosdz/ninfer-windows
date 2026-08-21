@@ -37,8 +37,8 @@ void require_accessible(const Tensor& a, const Tensor& b, const Tensor& c, const
 
 void dflash2_select_candidates(const Tensor& logits, Tensor& out_ids, Tensor& out_values,
                                cudaStream_t stream) {
-    if (logits.dtype != DType::F32) {
-        throw std::invalid_argument("dflash2_select_candidates: logits must be F32");
+    if (logits.dtype != DType::BF16) {
+        throw std::invalid_argument("dflash2_select_candidates: logits must be BF16");
     }
     if (out_ids.dtype != DType::I32 || out_values.dtype != DType::F32) {
         throw std::invalid_argument(
