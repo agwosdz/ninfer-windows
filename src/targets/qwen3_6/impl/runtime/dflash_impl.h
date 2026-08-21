@@ -171,11 +171,11 @@ void append_context_impl(Context& state, const Tensor& features, const Tensor& p
                 Tensor key_raw =
                     attn_roots.key_raw.view({Config::head_dim, Config::kv_heads, layer_columns});
                 value = attn_roots.value.view({Config::head_dim, Config::kv_heads, layer_columns});
-                ops::attn_input_proj(noise_conv, weight.query_key_value,
-                                     query_raw.view({Config::query_size, layer_columns}),
-                                     key_raw.view({Config::kv_size, layer_columns}),
-                                     value.view({Config::kv_size, layer_columns}),
-                                     state.execution.device.stream);
+                Tensor query_flat = query_raw.view({Config::query_size, layer_columns});
+                Tensor key_flat   = key_raw.view({Config::kv_size, layer_columns});
+                Tensor value_flat = value.view({Config::kv_size, layer_columns});
+                ops::attn_input_proj(noise_conv, weight.query_key_value, query_flat, key_flat,
+                                     value_flat, state.execution.device.stream);
                 key = attn_roots.key.view({Config::head_dim, Config::kv_heads, layer_columns});
                 ops::rmsnorm(key_raw, weight.key_norm, Config::rms_epsilon, false, key,
                              state.execution.device.stream);
@@ -431,8 +431,8 @@ auto dflash_decode_batch_body(DFlashBatchContext& state, std::int32_t batch_size
 
 
 
-template <class V>
-void propose_batch_v2_impl(DFlashBatchContext& state, qwen3_6::DFlashDecodeState& frame,
+template <class V, class Context>
+void propose_batch_v2_impl(Context& state, qwen3_6::DFlashDecodeState& frame,
                            std::int32_t batch_size, std::uint32_t k, DFlashEnvelopes envelopes) {
     if constexpr (!V::DFlashConfig::is_v2) {
         throw std::logic_error("DFlash2 proposal is unavailable for this target");
