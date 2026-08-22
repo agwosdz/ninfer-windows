@@ -23,6 +23,7 @@ Branch: `dflash-3.8-27b`. Goal: add DFlash2 support to the `qwen3.8-27b` target
   sampling with sparse per-position distributions). The v2 decode round runs eager (no CUDA
   graph capture; the drafter owns its all-local 2048-window cache, not the target KV). A
   DFlash draft window outside [1, 7] is rejected at startup.
+  The v2 full-block geometry (draft window forced to block size minus 1, CUDA graphs  disabled) applies only while the DFlash backend is selected; `--spec mtp` keeps the  requested MTP draft window in [1, 5] and the usual MTP graph policy, so the two  speculative modes coexist on this target.
 - Note: HF republished the Qwen3.8 frontend files on 2026-08-13 (chat template rewritten,
   `model_max_length` 131072 -> 262144); a fresh download fails the pinned-hash preflight.
   The verified conversion used the pinned frontend bytes recovered from the existing
