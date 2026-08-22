@@ -697,11 +697,15 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
     // v2 (DFlash2) is a block-diffusion drafter: it always proposes the full block
     // (width = k + 1 = block_size columns, so k = block_size - 1) and runs EAGER,
     // because its round contains a host greedy path-trace over the packed lattice
-    // rows that cannot be captured in a CUDA Graph. Force both for v2.
+    // rows that cannot be captured in a CUDA Graph. Both apply only when the DFlash
+    // backend is actually selected; other backends (e.g. MTP) keep the requested
+    // draft window and graph policy untouched.
     if constexpr (Variant::DFlashConfig::is_v2) {
-        static_assert(Variant::DFlashConfig::block_size >= 2);
-        impl->draft_window = Variant::DFlashConfig::block_size - 1;
-        impl->use_cuda_graph = false;
+        if (impl->speculative_backend == SpeculativeBackend::DFlash) {
+            static_assert(Variant::DFlashConfig::block_size >= 2);
+            impl->draft_window = Variant::DFlashConfig::block_size - 1;
+            impl->use_cuda_graph = false;
+        }
     }
     impl->device              = inputs.device;
     impl->kv_dtype            = inputs.kv_dtype;
