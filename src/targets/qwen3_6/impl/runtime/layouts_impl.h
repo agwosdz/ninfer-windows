@@ -553,9 +553,10 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
                         matrix(layout, DType::BF16, DFlashConfig::conv_projection_rows, tokens);
                         // ffn_conv = two-tap dynamic conv(side=0) of ffn_norm.
                         matrix(layout, DType::BF16, DFlashConfig::hidden, tokens);
-                        scratch(layout, ops::linear_swiglu_workspace_capacity_bytes(
-                            QType::W8G32_F16S, 2 * DFlashConfig::intermediate, DFlashConfig::hidden,
-                            tokens, tokens));
+                        // ffn_gate_up = linear(ffn_conv, mlp/gate_up): the v2 swiglu is
+                        // decomposed into W8 linear + silu_mul, since the W8 linear_swiglu
+                        // op only has kernels for the 35B drafter shape.
+                        matrix(layout, DType::BF16, 2 * DFlashConfig::intermediate, tokens);
                         // mlp_out / mlp_out_conv (two-tap conv(side=1)).
                         matrix(layout, DType::BF16, DFlashConfig::hidden, tokens);
                         matrix(layout, DType::BF16, DFlashConfig::hidden, tokens);

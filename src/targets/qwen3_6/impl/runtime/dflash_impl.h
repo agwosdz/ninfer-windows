@@ -17,6 +17,7 @@
 #include "ninfer/ops/rope.h"
 #include "ninfer/ops/scatter.h"
 #include "ninfer/ops/scalar.h"
+#include "ninfer/ops/silu_mul.h"
 #include "ninfer/ops/speculative_round.h"
 #include "ninfer/ops/swa.h"
 #include "ninfer/ops/dflash2_dynamic_conv.h"
@@ -564,9 +565,15 @@ void propose_batch_v2_impl(Context& state, qwen3_6::DFlashDecodeState& frame,
                                       0, Config::block_size, ffn_conv,
                                       state.execution.device.stream);
 
-            // SwiGLU: intermediate = silu(gate) * up
-            ops::linear_swiglu(ffn_conv, weight.gate_up, mlp_roots.intermediate,
-                               state.execution.work, state.execution.device.stream);
+            // SwiGLU: intermediate = silu(gate) * up. The W8 linear_swiglu op only has
+            // kernels for the 35B drafter shape, so the v2 drafter decomposes the
+            // projection like the MTP head: W8 linear gate/up + elementwise silu_mul.
+            Tensor ffn_gate_up = state.execution.work.alloc(
+                DType::BF16, {2 * Config::intermediate, columns});
+            ops::linear(ffn_conv, weight.gate_up, ffn_gate_up, state.execution.device.stream);
+            ops::silu_mul(ffn_gate_up.slice(0, 0, Config::intermediate),
+                          ffn_gate_up.slice(0, Config::intermediate, Config::intermediate),
+                          mlp_roots.intermediate, state.execution.device.stream);
 
             // mlp_out = linear(intermediate, down)
             Tensor mlp_out = state.execution.work.alloc(DType::BF16, {Config::hidden, columns});
