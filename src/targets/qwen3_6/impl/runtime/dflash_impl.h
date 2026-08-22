@@ -873,15 +873,31 @@ void capture_dflash_decode_batch(DFlashBatchContext& state, std::int32_t batch_s
                                  std::uint32_t k, DFlashEnvelopes envelopes,
                                  ops::GqaExecutionEnvelope target_envelope,
                                  DecodeGraphDefinition& definition) {
-    auto body = dflash_decode_batch_body(state, batch_size, k, envelopes, target_envelope);
-    capture_graph(state, definition, body);
+    // The scheduler reaches the v1 entry points for every DFlash target.
+    // V2 variants (dflash2 block-diffusion drafter) run the v2 body: its
+    // attention/FFN differ and the v1 path uses 35B-only fused ops
+    // (attn_input_proj / linear_swiglu).
+    if constexpr (Variant::DFlashConfig::is_v2) {
+        auto body = dflash_decode_batch_body_v2(state, batch_size, k, envelopes,
+                                                 target_envelope);
+        capture_graph(state, definition, body);
+    } else {
+        auto body = dflash_decode_batch_body(state, batch_size, k, envelopes, target_envelope);
+        capture_graph(state, definition, body);
+    }
 }
 
 void dflash_decode_batch(DFlashBatchContext& state, std::int32_t batch_size, std::uint32_t k,
                          DFlashEnvelopes envelopes, ops::GqaExecutionEnvelope target_envelope,
                          DecodeGraphExecutable* executable) {
-    auto body = dflash_decode_batch_body(state, batch_size, k, envelopes, target_envelope);
-    run_prepared(state, executable, body);
+    if constexpr (Variant::DFlashConfig::is_v2) {
+        auto body = dflash_decode_batch_body_v2(state, batch_size, k, envelopes,
+                                                 target_envelope);
+        run_prepared(state, executable, body);
+    } else {
+        auto body = dflash_decode_batch_body(state, batch_size, k, envelopes, target_envelope);
+        run_prepared(state, executable, body);
+    }
 }
 
 
