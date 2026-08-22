@@ -27,9 +27,14 @@
 
 #include <cuda_runtime.h>
 
+#include <atomic>
 #include <cstddef>
+#include <cstdio>
+#include <cstdlib>
+#include <fstream>
 #include <stdexcept>
 #include <utility>
+#include <vector>
 
 namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS::schedule {
 namespace {
@@ -694,6 +699,82 @@ void propose_batch_v2_impl(Context& state, qwen3_6::DFlashDecodeState& frame,
                                       Config::hidden, Config::block_size, lattice,
                                       state.execution.device.stream);
 
+        // [dflash-debug] one-shot probe (gated by NINFER_DFLASH_DEBUG env).
+        static std::atomic<std::int32_t> debug_rounds_a{0};
+        if (std::getenv("NINFER_DFLASH_DEBUG") != nullptr) {
+            const std::int32_t round_a = debug_rounds_a.fetch_add(1);
+            if (round_a < 8 && batch_size == 1) {
+                const std::int32_t topk = Config::selector_top_k;
+                std::vector<std::int32_t> h_cand(static_cast<std::size_t>(topk) * columns);
+                CUDA_CHECK(cudaMemcpyAsync(h_cand.data(), candidates.data,
+                                   static_cast<std::size_t>(topk) * columns * sizeof(std::int32_t),
+                                   cudaMemcpyDeviceToHost, state.execution.device.stream));
+                std::vector<float> h_unary(static_cast<std::size_t>(topk) * columns);
+                CUDA_CHECK(cudaMemcpyAsync(h_unary.data(), unary.data,
+                                   static_cast<std::size_t>(topk) * columns * sizeof(float),
+                                   cudaMemcpyDeviceToHost, state.execution.device.stream));
+                // Codebook dequant probe through the same W8 gather the path-trace uses.
+                Tensor probe_ids = state.execution.work.alloc(DType::I32, {4});
+                const std::int32_t probe_list[4] = {1234, 5678, 91011, Config::mask_token};
+                CUDA_CHECK(cudaMemcpyAsync(probe_ids.data, probe_list, sizeof(probe_list),
+                                   cudaMemcpyHostToDevice, state.execution.device.stream));
+                CUDA_CHECK(cudaStreamSynchronize(state.execution.device.stream));
+                Tensor succ_probe = state.execution.work.alloc(DType::BF16, {Config::selector_rank, 4});
+                Tensor pred_probe = state.execution.work.alloc(DType::BF16, {Config::selector_rank, 4});
+                ops::embedding(probe_ids, state.execution.model.dflash->selector_successor_codebook, succ_probe,
+                               state.execution.device.stream);
+                ops::embedding(probe_ids, state.execution.model.dflash->selector_predecessor_codebook, pred_probe,
+                               state.execution.device.stream);
+                const std::size_t lat_bytes = static_cast<std::size_t>(Config::hidden) * columns * sizeof(float);
+                std::vector<float> lat_h(lat_bytes / sizeof(float));
+                CUDA_CHECK(cudaMemcpyAsync(lat_h.data(), lattice.data, lat_bytes,
+                                   cudaMemcpyDeviceToHost, state.execution.device.stream));
+                std::vector<std::uint16_t> succ_h(4 * Config::selector_rank), pred_h(4 * Config::selector_rank), hid_s(32);
+                CUDA_CHECK(cudaMemcpyAsync(succ_h.data(), succ_probe.data, succ_probe.bytes(),
+                                   cudaMemcpyDeviceToHost, state.execution.device.stream));
+                CUDA_CHECK(cudaMemcpyAsync(pred_h.data(), pred_probe.data, pred_probe.bytes(),
+                                   cudaMemcpyDeviceToHost, state.execution.device.stream));
+                const std::uint16_t* hp = static_cast<const std::uint16_t*>(proposal_hidden.data);
+                for (int r = 0; r < 32; ++r) {
+                    CUDA_CHECK(cudaMemcpyAsync(&hid_s[r], hp + static_cast<std::size_t>(Config::hidden) + r,
+                                       2, cudaMemcpyDeviceToHost, state.execution.device.stream));
+                }
+                CUDA_CHECK(cudaStreamSynchronize(state.execution.device.stream));
+                std::ofstream f(std::getenv("NINFER_DFLASH_DEBUG_FILE"), std::ios::app);
+                f << "[dflash-debug round " << round_a << "] propose: width=" << width
+                  << " topk=" << topk << std::endl;
+                for (std::int32_t pos = 0; pos < width; ++pos) {
+                    f << "  pos " << pos << " candidates=";
+                    for (std::int32_t s = 0; s < topk; ++s) {
+                        f << h_cand[static_cast<std::size_t>(pos) * static_cast<std::size_t>(topk) + s] << " ";
+                    }
+                    f << std::endl;
+                    f << "  pos " << pos << " unary=";
+                    for (std::int32_t s = 0; s < topk; ++s) {
+                        f << h_unary[static_cast<std::size_t>(pos) * static_cast<std::size_t>(topk) + s] << " ";
+                    }
+                    f << std::endl;
+                }
+                f << "  codebook ids {1234,5678,91011,mask} successor bf16raw r0-7=";
+                                for (int r = 0; r < 8; ++r) { for (int i = 0; i < 4; ++i) { f << succ_h[Config::selector_rank * i + r] << " "; } }
+                f << std::endl;
+                f << "  codebook ids {1234,5678,91011,mask} predecessor bf16raw r0-7=";
+                for (int r = 0; r < 8; ++r) { for (int i = 0; i < 4; ++i) { f << pred_h[Config::selector_rank * i + r] << " "; } }
+                f << std::endl;
+                for (std::int32_t pos = 1; pos < width; ++pos) {
+                    const float* rowp = lat_h.data() + static_cast<std::size_t>(pos) * Config::hidden;
+                    f << "  lattice pos " << pos << " ids=";
+                    for (std::int32_t s = 0; s < topk; ++s) { f << static_cast<std::int32_t>(rowp[s]) << " "; }
+                    f << std::endl << "  lattice pos " << pos << " pred0 scores=";
+                    for (std::int32_t s = 0; s < topk; ++s) { f << rowp[topk + s] << " "; }
+                    f << std::endl;
+                }
+                f << "  proposal_hidden(pos1) bf16raw r0-31=";
+                for (int r = 0; r < 32; ++r) { f << hid_s[r] << " "; }
+                f << std::endl;
+            }
+        }
+
         // D2H + host greedy path-trace (eager; cannot be graph-captured).
         // pred = 0 (anchor row); per position read the 16 successor scores
         // for the current predecessor, argmax → next draft token.
@@ -844,6 +925,46 @@ auto dflash_decode_batch_body_v2(DFlashBatchContext& state, std::int32_t batch_s
         CUDA_CHECK(cudaMemcpyAsync(&state.host_egress, frame.egress.data,
                                    sizeof(qwen3_6::DFlashDecodeEgress), cudaMemcpyDeviceToHost,
                                    state.execution.device.stream));
+
+        // [dflash-debug] one-shot probe (gated by NINFER_DFLASH_DEBUG env).
+        static std::atomic<std::int32_t> debug_rounds_b{0};
+        if (std::getenv("NINFER_DFLASH_DEBUG") != nullptr) {
+            const std::int32_t round_b = debug_rounds_b.fetch_add(1);
+            if (round_b < 8 && batch_size == 1) {
+                CUDA_CHECK(cudaStreamSynchronize(state.execution.device.stream));
+                std::vector<std::int32_t> h_drafts(k), h_target(width), h_misc(5);
+                CUDA_CHECK(cudaMemcpyAsync(h_drafts.data(), drafts.data, h_drafts.size() * 4,
+                                   cudaMemcpyDeviceToHost, state.execution.device.stream));
+                CUDA_CHECK(cudaMemcpyAsync(h_target.data(), target_tokens.data, h_target.size() * 4,
+                                   cudaMemcpyDeviceToHost, state.execution.device.stream));
+                CUDA_CHECK(cudaMemcpyAsync(&h_misc[0], anchors.data, 4, cudaMemcpyDeviceToHost,
+                                   state.execution.device.stream));
+                CUDA_CHECK(cudaMemcpyAsync(&h_misc[1], frontiers.data, 4, cudaMemcpyDeviceToHost,
+                                   state.execution.device.stream));
+                CUDA_CHECK(cudaMemcpyAsync(&h_misc[2], context_starts.data, 4, cudaMemcpyDeviceToHost,
+                                   state.execution.device.stream));
+                CUDA_CHECK(cudaMemcpyAsync(&h_misc[3], extents.data, 4, cudaMemcpyDeviceToHost,
+                                   state.execution.device.stream));
+                CUDA_CHECK(cudaMemcpyAsync(&h_misc[4], valid_columns.data, 4, cudaMemcpyDeviceToHost,
+                                   state.execution.device.stream));
+                CUDA_CHECK(cudaStreamSynchronize(state.execution.device.stream));
+                std::ofstream f(std::getenv("NINFER_DFLASH_DEBUG_FILE"), std::ios::app);
+                f << "[dflash-debug round " << round_b << "] body: frontier=" << h_misc[1]
+                  << " ctx_front=" << h_misc[2] << " extent=" << h_misc[3] << " valid=" << h_misc[4]
+                  << " anchor=" << h_misc[0] << std::endl;
+                f << "  drafts (k=" << k << "): ";
+                for (std::int32_t i = 0; i < k; ++i) { f << h_drafts[i] << " "; }
+                f << std::endl << "  target_argmax (width=" << width << "): ";
+                for (std::int32_t i = 0; i < width; ++i) { f << h_target[i] << " "; }
+                f << std::endl;
+                f << "  accepted=" << state.host_egress.accepted_drafts[0]
+                  << " licensed_count=" << state.host_egress.licensed_counts[0] << " licensed_tokens=";
+                for (std::int32_t i = 0; i < width; ++i) {
+                    f << static_cast<std::int32_t>(state.host_egress.licensed_tokens[i]) << " ";
+                }
+                f << std::endl;
+            }
+        }
     };
 }
 } // namespace
