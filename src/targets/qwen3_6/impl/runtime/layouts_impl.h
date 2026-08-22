@@ -478,6 +478,9 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
                         (void)workspace_recipe::dflash_attention<DFlashConfig>(layout, tokens);
                         matrix(layout, DType::BF16, DFlashConfig::conv_projection_rows, tokens);
                         matrix(layout, DType::BF16, DFlashConfig::hidden, tokens);
+                        // packed QKV buffer for the decomposed drafter QKV linear.
+                        matrix(layout, DType::BF16,
+                               DFlashConfig::query_size + 2 * DFlashConfig::kv_size, tokens);
                     } else {
                         (void)workspace_recipe::dflash_context_layer<DFlashConfig>(layout, tokens);
                     }
@@ -540,6 +543,9 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
                     matrix(layout, DType::BF16, DFlashConfig::conv_projection_rows, tokens);
                     // noise_conv = two-tap dynamic conv(side=0) of noise_norm.
                     matrix(layout, DType::BF16, DFlashConfig::hidden, tokens);
+                    // packed QKV buffer for the decomposed drafter QKV linear.
+                    matrix(layout, DType::BF16,
+                           DFlashConfig::query_size + 2 * DFlashConfig::kv_size, tokens);
                     scratch(layout, ops::swa_workspace_capacity_bytes(
                         DFlashConfig::local_capacity, {0, plan.capacity}, width, width, batch));
                     // attn_out / attn_out_conv (two-tap conv(side=1)) / ffn_inp.

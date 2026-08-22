@@ -172,11 +172,33 @@ void append_context_impl(Context& state, const Tensor& features, const Tensor& p
                 Tensor key_raw =
                     attn_roots.key_raw.view({Config::head_dim, Config::kv_heads, layer_columns});
                 value = attn_roots.value.view({Config::head_dim, Config::kv_heads, layer_columns});
-                Tensor query_flat = query_raw.view({Config::query_size, layer_columns});
-                Tensor key_flat   = key_raw.view({Config::kv_size, layer_columns});
-                Tensor value_flat = value.view({Config::kv_size, layer_columns});
-                ops::attn_input_proj(noise_conv, weight.query_key_value, query_flat, key_flat,
-                                     value_flat, state.execution.device.stream);
+                // QKV: plain W8 linear into a packed 6144-row buffer (the drafter
+                // QKV shape is 35B-incompatible for the fused attn_input_proj op),
+                // then scatter rows into the existing q/k/v recipe buffers.
+                Tensor qkv_packed = state.execution.work.alloc(
+                    DType::BF16, {Config::query_size + 2 * Config::kv_size, layer_columns});
+                ops::linear(noise_conv, weight.query_key_value, qkv_packed,
+                            state.execution.device.stream);
+                {
+                    const std::size_t row_bytes =
+                        static_cast<std::size_t>(layer_columns) * dtype_size(DType::BF16);
+                    CUDA_CHECK(cudaMemcpyAsync(query_raw.data, qkv_packed.data,
+                                               static_cast<std::size_t>(Config::query_size) * row_bytes,
+                                               cudaMemcpyDeviceToDevice,
+                                               state.execution.device.stream));
+                    CUDA_CHECK(cudaMemcpyAsync(key_raw.data,
+                                               static_cast<char*>(qkv_packed.data) +
+                                                   static_cast<std::size_t>(Config::query_size) * row_bytes,
+                                               static_cast<std::size_t>(Config::kv_size) * row_bytes,
+                                               cudaMemcpyDeviceToDevice,
+                                               state.execution.device.stream));
+                    CUDA_CHECK(cudaMemcpyAsync(value.data,
+                                               static_cast<char*>(qkv_packed.data) +
+                                                   static_cast<std::size_t>(Config::query_size + Config::kv_size) * row_bytes,
+                                               static_cast<std::size_t>(Config::kv_size) * row_bytes,
+                                               cudaMemcpyDeviceToDevice,
+                                               state.execution.device.stream));
+                }
                 key = attn_roots.key.view({Config::head_dim, Config::kv_heads, layer_columns});
                 ops::rmsnorm(key_raw, weight.key_norm, Config::rms_epsilon, false, key,
                              state.execution.device.stream);
@@ -496,11 +518,30 @@ void propose_batch_v2_impl(Context& state, qwen3_6::DFlashDecodeState& frame,
             Tensor query_raw = attn_roots.query_raw.view({Config::head_dim, Config::query_heads, columns});
             Tensor key_raw   = attn_roots.key_raw.view({Config::head_dim, Config::kv_heads, columns});
             Tensor value     = attn_roots.value.view({Config::head_dim, Config::kv_heads, columns});
-            Tensor query_flat = query_raw.view({Config::query_size, columns});
-            Tensor key_flat   = key_raw.view({Config::kv_size, columns});
-            Tensor value_flat = value.view({Config::kv_size, columns});
-            ops::attn_input_proj(noise_conv, weight.query_key_value, query_flat, key_flat,
-                                 value_flat, state.execution.device.stream);
+            // QKV: plain W8 linear into a packed 6144-row buffer (the drafter
+            // QKV shape is 35B-incompatible for the fused attn_input_proj op),
+            // then scatter rows into the existing q/k/v recipe buffers.
+            Tensor qkv_packed = state.execution.work.alloc(
+                DType::BF16, {Config::query_size + 2 * Config::kv_size, columns});
+            ops::linear(noise_conv, weight.query_key_value, qkv_packed,
+                        state.execution.device.stream);
+            {
+                const std::size_t row_bytes =
+                    static_cast<std::size_t>(columns) * dtype_size(DType::BF16);
+                CUDA_CHECK(cudaMemcpyAsync(query_raw.data, qkv_packed.data,
+                                           static_cast<std::size_t>(Config::query_size) * row_bytes,
+                                           cudaMemcpyDeviceToDevice, state.execution.device.stream));
+                CUDA_CHECK(cudaMemcpyAsync(key_raw.data,
+                                           static_cast<char*>(qkv_packed.data) +
+                                               static_cast<std::size_t>(Config::query_size) * row_bytes,
+                                           static_cast<std::size_t>(Config::kv_size) * row_bytes,
+                                           cudaMemcpyDeviceToDevice, state.execution.device.stream));
+                CUDA_CHECK(cudaMemcpyAsync(value.data,
+                                           static_cast<char*>(qkv_packed.data) +
+                                               static_cast<std::size_t>(Config::query_size + Config::kv_size) * row_bytes,
+                                           static_cast<std::size_t>(Config::kv_size) * row_bytes,
+                                           cudaMemcpyDeviceToDevice, state.execution.device.stream));
+            }
 
             // Head norms + RoPE
             Tensor query = attn_roots.query.view({Config::head_dim, Config::query_heads, columns});
