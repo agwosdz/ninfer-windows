@@ -265,6 +265,62 @@ int test_reasoning_effort() {
     failures +=
         check(throws_api([&] { (void)parse_chat_completion_request(invalid, default_limits()); }),
               "non-string Chat Completions reasoning effort was accepted");
+
+    // The Sharp template's kwargs channel: chat_template_kwargs.reasoning_effort.
+    Json kw = base;
+    kw["chat_template_kwargs"] = Json{{"reasoning_effort", "xhigh"}};
+    const GenerationRequest kw_request = parse_chat_completion_request(kw, default_limits());
+    failures += check(kw_request.reasoning_effort == RequestedReasoningEffort::XHigh,
+                      "chat_template_kwargs.reasoning_effort was not parsed");
+    failures += check(kw_request.reasoning_effort_param == "chat_template_kwargs",
+                      "kwargs-sourced effort was not attributed to its channel");
+    const ninfer::PromptInput kw_prompt = translate(kw_request);
+    failures += check(kw_prompt.options.enable_thinking &&
+                          kw_prompt.options.reasoning_effort == ninfer::ReasoningEffort::XHigh,
+                      "kwargs-sourced effort did not reach PromptInput");
+
+    // Top-level wins when both spellings agree; an explicit disagreement conflicts.
+    Json kw_both                = base;
+    kw_both["reasoning_effort"] = "xhigh";
+    kw_both["chat_template_kwargs"] = Json{{"reasoning_effort", "xhigh"}};
+    const GenerationRequest kw_both_request = parse_chat_completion_request(kw_both,
+                                                                           default_limits());
+    failures += check(kw_both_request.reasoning_effort == RequestedReasoningEffort::XHigh &&
+                          kw_both_request.reasoning_effort_param == "reasoning_effort",
+                      "matching dual spellings did not keep the top-level source");
+
+    Json kw_conflict = base;
+    kw_conflict["reasoning_effort"] = "low";
+    kw_conflict["chat_template_kwargs"] = Json{{"reasoning_effort", "xhigh"}};
+    failures += check(api_code([&] { (void)parse_chat_completion_request(kw_conflict,
+                                                                         default_limits()); })
+                          == "conflicting_template_option",
+                      "conflicting reasoning_effort spellings were accepted");
+
+    // Unknown or mistyped kwargs values still 400; null is unset.
+    Json kw_unknown = base;
+    kw_unknown["chat_template_kwargs"] = Json{{"reasoning_effort", "ultra"}};
+    failures += check(
+        throws_api([&] { (void)parse_chat_completion_request(kw_unknown, default_limits()); }),
+        "unknown kwargs reasoning_effort was accepted");
+    Json kw_typed = base;
+    kw_typed["chat_template_kwargs"] = Json{{"reasoning_effort", 3}};
+    failures += check(
+        throws_api([&] { (void)parse_chat_completion_request(kw_typed, default_limits()); }),
+        "non-string kwargs reasoning_effort was accepted");
+    Json kw_null = base;
+    kw_null["chat_template_kwargs"] = Json{{"reasoning_effort", nullptr}};
+    failures += check(!parse_chat_completion_request(kw_null, default_limits())
+                          .reasoning_effort.has_value(),
+                      "null kwargs reasoning_effort was treated as a value");
+
+    // The kwargs channel inherits the enable_thinking conflict rule.
+    Json kw_think_off = base;
+    kw_think_off["chat_template_kwargs"] = Json{{"reasoning_effort", "low"},
+                                                {"enable_thinking", false}};
+    failures += check(
+        throws_api([&] { (void)parse_chat_completion_request(kw_think_off, default_limits()); }),
+        "kwargs effort with enable_thinking=false was accepted");
     return failures;
 }
 

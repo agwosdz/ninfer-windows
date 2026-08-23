@@ -514,7 +514,7 @@ std::optional<bool> parse_openai_preserve_thinking(const Json& body) {
         }
         for (auto it = kwargs.begin(); it != kwargs.end(); ++it) {
             if (it.key() != "preserve_thinking" && it.key() != "enable_thinking" &&
-                !it.value().is_null()) {
+                it.key() != "reasoning_effort" && !it.value().is_null()) {
                 bad_request("chat_template_kwargs." + it.key() + " is not supported",
                             "chat_template_kwargs", "chat_template_option_not_supported");
             }
@@ -569,7 +569,11 @@ void parse_openai_chat_thinking(const Json& body, std::optional<bool>* enable_th
                                 const std::string& conflict_param) {
     *enable_thinking = parse_chat_enable_thinking(body);
 
+    // Two spellings, one value: the protocol's top-level `reasoning_effort` field, or
+    // the Sharp template's kwargs channel (`chat_template_kwargs.reasoning_effort`).
+    // Top-level wins; an explicit disagreement is a conflict, not a silent override.
     std::optional<RequestedReasoningEffort> effort;
+    std::string param = "reasoning_effort";
     if (body.contains("reasoning_effort") && !body.at("reasoning_effort").is_null()) {
         if (!body.at("reasoning_effort").is_string()) {
             bad_request("reasoning_effort must be a string or null", "reasoning_effort");
@@ -583,14 +587,40 @@ void parse_openai_chat_thinking(const Json& body, std::optional<bool>* enable_th
         }
         effort = *parsed;
     }
+    if (body.contains("chat_template_kwargs") && body.at("chat_template_kwargs").is_object()) {
+        const Json& kwargs = body.at("chat_template_kwargs");
+        if (kwargs.contains("reasoning_effort") && !kwargs.at("reasoning_effort").is_null()) {
+            if (!kwargs.at("reasoning_effort").is_string()) {
+                bad_request("chat_template_kwargs.reasoning_effort must be a string or null",
+                            "chat_template_kwargs");
+            }
+            const std::string value = kwargs.at("reasoning_effort").get<std::string>();
+            const std::optional<RequestedReasoningEffort> parsed =
+                parse_requested_reasoning_effort(value);
+            if (!parsed) {
+                bad_request("chat_template_kwargs.reasoning_effort must be one of none, minimal, "
+                            "low, medium, high, xhigh, or max",
+                            "chat_template_kwargs");
+            }
+            if (effort) {
+                if (*effort != *parsed) {
+                    bad_request("conflicting reasoning_effort values", "reasoning_effort",
+                                "conflicting_template_option");
+                }
+            } else {
+                effort = *parsed;
+                param = "chat_template_kwargs";
+            }
+        }
+    }
 
     if (effort) {
         *reasoning_effort = *effort;
-        *reasoning_effort_param = "reasoning_effort";
+        *reasoning_effort_param = param;
         if (enable_thinking->has_value() &&
             *enable_thinking != (*effort != RequestedReasoningEffort::None)) {
-            bad_request("reasoning effort conflicts with " + conflict_param,
-                        "reasoning_effort", "conflicting_template_option");
+            bad_request("reasoning effort conflicts with " + conflict_param, param,
+                        "conflicting_template_option");
         }
     }
 }
