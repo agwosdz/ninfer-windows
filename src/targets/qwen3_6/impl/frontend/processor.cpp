@@ -449,9 +449,18 @@ RenderedChat expand_placeholders(RenderedChat rendered, const std::vector<Vision
         rendered.text.replace(position, needle.size(), replacement);
         search = position + replacement.size();
     }
-    if (rendered.text.find(kImagePad, search) != std::string::npos ||
-        rendered.text.find(kVideoPad, search) != std::string::npos) {
-        throw std::invalid_argument("rendered chat has unbound vision placeholders");
+    // Stray pad tokens after the last bound item (e.g. a literal image-pad
+    // marker that leaked into re-injected reasoning/thinking text) are prose,
+    // not real media. Drop them instead of failing the request; only text at/
+    // after `search` (i.e. beyond every bound image) is ever removed.
+    for (const std::string_view pad : {kImagePad, kVideoPad}) {
+        std::size_t pos;
+        while ((pos = rendered.text.find(pad, search)) != std::string::npos) {
+            rendered.text.erase(pos, pad.size());
+            if (rendered.rewrite_checkpoint && pos < rendered.rewrite_checkpoint->offset) {
+                rendered.rewrite_checkpoint->offset -= pad.size();
+            }
+        }
     }
     return rendered;
 }
