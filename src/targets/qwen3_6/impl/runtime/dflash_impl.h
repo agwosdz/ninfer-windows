@@ -159,19 +159,13 @@ void append_context_impl(Context& state, const Tensor& features, const Tensor& p
             Tensor key;
             Tensor value;
             if constexpr (Config::is_v2) {
+                // Committed context K/V is a direct per-layer projection of the raw
+                // encoder feature (the reference "KV injection" path:
+                // K = rope(k_norm(wk @ feature)), V = wv @ feature). It does NOT go
+                // through the drafter's attention input_norm / dynamic conv — those
+                // apply only to in-flight block tokens during proposal.
                 auto attn_roots =
                     workspace_recipe::dflash_attention<Config>(state.execution.work, layer_columns);
-                ops::rmsnorm(layer_context, weight.input_norm, Config::rms_epsilon, false,
-                             attn_roots.hidden, state.execution.device.stream);
-                Tensor attn_dynamic = state.execution.work.alloc(
-                    DType::BF16, {Config::conv_projection_rows, layer_columns});
-                ops::linear(attn_roots.hidden, weight.attention_conv_projection, attn_dynamic,
-                            state.execution.device.stream);
-                Tensor noise_conv = state.execution.work.alloc(
-                    DType::BF16, {Config::hidden, layer_columns});
-                ops::dflash2_dynamic_conv(attn_roots.hidden, attn_dynamic,
-                                          weight.attention_conv_base, 0, layer_width, noise_conv,
-                                          state.execution.device.stream);
                 Tensor query_raw =
                     attn_roots.query_raw.view({Config::head_dim, Config::query_heads, layer_columns});
                 Tensor key_raw =
@@ -182,7 +176,7 @@ void append_context_impl(Context& state, const Tensor& features, const Tensor& p
                 // then scatter rows into the existing q/k/v recipe buffers.
                 Tensor qkv_packed = state.execution.work.alloc(
                     DType::BF16, {Config::query_size + 2 * Config::kv_size, layer_columns});
-                ops::linear(noise_conv, weight.query_key_value, qkv_packed,
+                ops::linear(layer_context, weight.query_key_value, qkv_packed,
                             state.execution.device.stream);
                 {
                     const std::size_t row_bytes =
@@ -480,15 +474,15 @@ void propose_batch_v2_impl(Context& state, qwen3_6::DFlashDecodeState& frame,
         ops::prepare_masked_block(anchors, frontiers, valid_columns, Config::mask_token, ids,
                                   positions, state.execution.device.stream);
 
-        // inpL: the block input embeddings — the FIXED attention base for all
-        // layers (block-diffusion: no residual stream between layers).
+        // inpL: the block input embeddings (anchor + mask tokens) — the initial
+        // drafter state before the layer loop.
         Tensor inpL = state.execution.work.alloc(DType::BF16, {Config::hidden, columns});
         ops::embedding(ids.view({columns}), state.execution.model.token_embedding, inpL,
                        state.execution.device.stream);
 
-        // residual: the running state, initialized to inpL. Updated at the end
-        // of each layer (mlp_out_conv + ffn_inp); used for the final layer's
-        // output.
+        // residual: the running drafter state, initialized to inpL. Each layer's
+        // attention/FFN are driven from it and it is updated at the end of each
+        // layer (mlp_out_conv + ffn_inp); the final value feeds the output head.
         Tensor residual = state.execution.work.alloc(DType::BF16, {Config::hidden, columns});
         const std::size_t hidden_bytes =
             static_cast<std::size_t>(Config::hidden) * columns * dtype_size(DType::BF16);
@@ -503,8 +497,9 @@ void propose_batch_v2_impl(Context& state, qwen3_6::DFlashDecodeState& frame,
             // === Attention sublayer ===
             auto attn_roots = workspace_recipe::dflash_attention<Config>(state.execution.work, columns);
 
-            // noise_norm = rmsnorm(inpL, input_norm) — norm of the FIXED base
-            ops::rmsnorm(inpL, weight.input_norm, Config::rms_epsilon, false, attn_roots.hidden,
+            // noise_norm = rmsnorm(residual, input_norm) — norm of the running
+            // residual stream (the block-diffusion layers compose via the residual).
+            ops::rmsnorm(residual, weight.input_norm, Config::rms_epsilon, false, attn_roots.hidden,
                          state.execution.device.stream);
 
             // attn_dynamic = linear(noise_norm, attn_conv_proj)
@@ -586,11 +581,11 @@ void propose_batch_v2_impl(Context& state, qwen3_6::DFlashDecodeState& frame,
                                       1, Config::block_size, attn_out_conv,
                                       state.execution.device.stream);
 
-            // ffn_inp = attn_out_conv + inpL
+            // ffn_inp = attn_out_conv + residual (running stream)
             Tensor ffn_inp = state.execution.work.alloc(DType::BF16, {Config::hidden, columns});
             CUDA_CHECK(cudaMemcpyAsync(ffn_inp.data, attn_out_conv.data, hidden_bytes,
                                        cudaMemcpyDeviceToDevice, state.execution.device.stream));
-            ops::residual_add(inpL, ffn_inp, state.execution.device.stream);
+            ops::residual_add(residual, ffn_inp, state.execution.device.stream);
 
             // === FFN sublayer ===
             auto mlp_roots = workspace_recipe::dflash_mlp<Config>(state.execution.work, columns);
@@ -658,12 +653,13 @@ void propose_batch_v2_impl(Context& state, qwen3_6::DFlashDecodeState& frame,
         ops::dflash2_select_candidates(logits, candidates, unary,
                                        state.execution.device.stream);
 
-        // hidden_pos = linear(inpL, selector_hidden_proj) — the rank-256
-        // projection of the draft input embeddings
+        // hidden_pos = linear(proposal_hidden, selector_hidden_proj) — the rank-256
+        // projection of the drafter's final output hidden state (the reference
+        // conditions the lattice on res->t_embd, the normed final hidden state).
         Tensor hidden_pos = state.execution.work.alloc(
             DType::BF16, {Config::selector_rank, columns});
-        ops::linear(inpL, state.execution.model.dflash->selector_hidden_projection, hidden_pos,
-                    state.execution.device.stream);
+        ops::linear(proposal_hidden, state.execution.model.dflash->selector_hidden_projection,
+                    hidden_pos, state.execution.device.stream);
 
         // successor = embedding(candidates_flat, successor_codebook)
         const std::int32_t top_k_cols = Config::selector_top_k * columns;
