@@ -172,7 +172,7 @@ CyclicKVCacheLayerView make_context_view(DeviceBuffer& k, DeviceBuffer& v) {
 std::size_t workspace_capacity(std::int32_t tokens, std::int32_t context) {
     const ops::SwaContextExecutionEnvelope envelope{static_cast<std::uint32_t>(context),
                                                     static_cast<std::uint32_t>(context)};
-    return ops::swa_workspace_capacity_bytes(envelope, tokens, tokens, 1);
+    return ops::swa_workspace_capacity_bytes(kWindow, envelope, tokens, tokens, 1);
 }
 
 class Case {
