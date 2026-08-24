@@ -54,3 +54,6 @@ dist/*
 
 # Claude Code personal/local settings (may contain API tokens)
 .claude/settings.local.json
+
+# Git worktree checkouts (local; per-branch working copies)
+worktrees/
