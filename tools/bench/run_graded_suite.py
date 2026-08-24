@@ -366,9 +366,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             "weights_id": identity["weights_id"],
             "label": f"{path.name} [{name} / {identity['weights_id'] or '?'}]",
         })
-    discovered = discover_artifacts(args.models_dir, args.artifact_dir)
-    known = {str(entry["path"]) for entry in artifacts}
-    artifacts.extend(entry for entry in discovered if str(entry["path"]) not in known)
+    # `--artifact` is exclusive: when any are given, they replace discovery
+    # (models/, out/, --artifact-dir) entirely so a restricted campaign runs
+    # exactly the named artifacts and nothing else.
+    if not args.artifact:
+        discovered = discover_artifacts(args.models_dir, args.artifact_dir)
+        known = set()
+        artifacts.extend(entry for entry in discovered if str(entry["path"]) not in known)
 
     use_wizard = not args.family
     if args.dry_run and use_wizard:
