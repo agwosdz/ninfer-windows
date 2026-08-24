@@ -44,6 +44,14 @@ void gqa_small_t_partial_i8(const Tensor& q, CacheInput input, const Tensor& pos
                             std::int32_t splits, Tensor& partial_acc, Tensor& partial_m,
                             Tensor& partial_l, cudaStream_t stream);
 
+// E8 lattice/root compressed-KV codec route (gqa_attention_decode_e8.cu).
+template <typename Geometry, typename CacheInput>
+void gqa_small_t_partial_e8(const Tensor& q, CacheInput input, const Tensor& pos, float scale,
+                            PagedKVBatchLayerView cache, const GqaSmallTInvocation& invocation,
+                            std::int32_t logical_capacity, std::int32_t implementation_window,
+                            std::int32_t splits, Tensor& partial_acc, Tensor& partial_m,
+                            Tensor& partial_l, cudaStream_t stream);
+
 template <typename Geometry, typename CacheView, typename Metadata>
 void gqa_prefill_attention_bf16(const Tensor& q, const Tensor& positions, float scale,
                                 const CacheView& cache, Metadata metadata, Tensor& out,
@@ -54,12 +62,23 @@ void gqa_prefill_attention_i8(const Tensor& q, const Tensor& positions, float sc
                               const CacheView& cache, Metadata metadata, Tensor& out,
                               cudaStream_t stream);
 
+// E8 root compressed-KV attention route (gqa_attention_prefill_e8.cu).
+template <typename Geometry, typename CacheView, typename Metadata>
+void gqa_prefill_attention_e8(const Tensor& q, const Tensor& positions, float scale,
+                              const CacheView& cache, Metadata metadata, Tensor& out,
+                              cudaStream_t stream);
+
 template <typename Geometry, typename CacheView, typename Metadata>
 void gqa_prefill_append_bf16(const Tensor& k, const Tensor& v, const Tensor& positions,
                              CacheView cache, Metadata metadata, cudaStream_t stream);
 
 template <typename Geometry, typename CacheView, typename Metadata>
 void gqa_prefill_append_i8(const Tensor& k, const Tensor& v, const Tensor& positions,
+                           CacheView cache, Metadata metadata, cudaStream_t stream);
+
+// E8 lattice/root compressed-KV append route (gqa_attention_prefill_e8.cu).
+template <typename Geometry, typename CacheView, typename Metadata>
+void gqa_prefill_append_e8(const Tensor& k, const Tensor& v, const Tensor& positions,
                            CacheView cache, Metadata metadata, cudaStream_t stream);
 
 bool gqa_attention_uses_small_t(std::int32_t tokens);

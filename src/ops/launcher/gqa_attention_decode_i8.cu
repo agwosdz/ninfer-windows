@@ -1,5 +1,7 @@
 // ninfer::ops - INT8 small-T partial-kernel route. Split from the unified
 // dispatcher so this kernel family compiles in its own translation unit.
+// Plain, packed-V and packed-K cache layouts instantiate here; the E8
+// lattice/root codec variants live in gqa_attention_decode_e8.cu.
 #include "ops/launcher/gqa_attention.h"
 
 #include "ops/kernel/gqa_attention_decode_i8.cuh"
@@ -11,7 +13,8 @@
 namespace ninfer::ops::detail {
 namespace {
 
-template <typename Geometry, int TokenTile, bool MultiBatch, bool Masked, typename CacheInput>
+template <typename Geometry, int TokenTile, bool PackedV, bool RotateK, bool RotateV,
+          bool PackedK, bool MultiBatch, bool Masked, typename CacheInput>
 void launch_tc_partial_i8(const Tensor& q, CacheInput input, const Tensor& pos, float scale,
                           PagedKVBatchLayerView cache, const GqaSmallTInvocation& invocation,
                           std::int32_t logical_capacity, std::int32_t implementation_window,
@@ -29,16 +32,18 @@ void launch_tc_partial_i8(const Tensor& q, CacheInput input, const Tensor& pos, 
             static const cudaError_t attr = cudaFuncSetAttribute(
                 gqa_attention_decode_i8_tiled_kernel<Geometry, TokenTile, WarpsPerCta,
                                                      MinBlocksPerSm, KeyBlock, DynamicArena,
-                                                     MultiBatch, Masked, CacheInput>,
+                                                     PackedV, RotateK, RotateV, PackedK,
+                                                     false, false, MultiBatch, Masked, CacheInput>,
                 cudaFuncAttributeMaxDynamicSharedMemorySize, static_cast<int>(kDynamicBytes));
             CUDA_CHECK(attr);
         }
         gqa_attention_decode_i8_tiled_kernel<Geometry, TokenTile, WarpsPerCta, MinBlocksPerSm,
-                                             KeyBlock, DynamicArena, MultiBatch, Masked, CacheInput>
+                                             KeyBlock, DynamicArena, PackedV, RotateK, RotateV,
+                                             PackedK, false, false, MultiBatch, Masked, CacheInput>
             <<<grid, WarpsPerCta * 32, kDynamicBytes, stream>>>(
                 static_cast<const __nv_bfloat16*>(q.data), input,
                 static_cast<const std::int32_t*>(pos.data), static_cast<std::int8_t*>(cache_k.data),
-                static_cast<std::int8_t*>(cache_v.data), static_cast<__half*>(cache_k_scale.data),
+                static_cast<std::uint8_t*>(cache_v.data), static_cast<__half*>(cache_k_scale.data),
                 static_cast<__half*>(cache_v_scale.data),
                 static_cast<const std::int32_t*>(cache.block_tables.data),
                 invocation.valid_columns == nullptr
@@ -107,50 +112,60 @@ void gqa_small_t_partial_i8(const Tensor& q, CacheInput input, const Tensor& pos
                             std::int32_t logical_capacity, std::int32_t implementation_window,
                             std::int32_t splits, Tensor& partial_acc, Tensor& partial_m,
                             Tensor& partial_l, cudaStream_t stream) {
-#define NINFER_GQA_SMALL_T_I8_DISPATCH(TOKENS)                                                      \
-    do {                                                                                           \
-        const auto launch_profile = [&]<bool MultiBatch, bool Masked>() {                          \
-            launch_tc_partial_i8<Geometry, (TOKENS), MultiBatch, Masked>(                          \
-                q, input, pos, scale, cache, invocation, logical_capacity, implementation_window,  \
-                splits, partial_acc, partial_m, partial_l, stream);                                \
-        };                                                                                         \
-        const bool masked = invocation.valid_columns != nullptr;                                   \
-        if (invocation.batch_size == 1) {                                                          \
-            if (masked) {                                                                          \
-                launch_profile.template operator()<false, true>();                                 \
-            } else {                                                                               \
-                launch_profile.template operator()<false, false>();                                \
-            }                                                                                      \
-        } else if (masked) {                                                                       \
-            launch_profile.template operator()<true, true>();                                      \
-        } else {                                                                                   \
-            launch_profile.template operator()<true, false>();                                     \
-        }                                                                                          \
+    const auto dispatch_variant = [&]<bool PackedV, bool RotateK, bool RotateV, bool PackedK>() {
+#define NINFER_GQA_SMALL_T_I8_DISPATCH(TOKENS)                                                  \
+    do {                                                                                        \
+        const auto launch_profile = [&]<bool MultiBatch, bool Masked>() {                       \
+            launch_tc_partial_i8<Geometry, (TOKENS), PackedV, RotateK, RotateV, PackedK,        \
+                                 MultiBatch, Masked>(                                           \
+                q, input, pos, scale, cache, invocation, logical_capacity, implementation_window,\
+                splits, partial_acc, partial_m, partial_l, stream);                             \
+        };                                                                                      \
+        const bool masked = invocation.valid_columns != nullptr;                                \
+        if (invocation.batch_size == 1) {                                                       \
+            if (masked) {                                                                       \
+                launch_profile.template operator()<false, true>();                              \
+            } else {                                                                            \
+                launch_profile.template operator()<false, false>();                             \
+            }                                                                                   \
+        } else if (masked) {                                                                    \
+            launch_profile.template operator()<true, true>();                                   \
+        } else {                                                                                \
+            launch_profile.template operator()<true, false>();                                  \
+        }                                                                                       \
     } while (0)
 
-    switch (invocation.width) {
-    case 1:
-        NINFER_GQA_SMALL_T_I8_DISPATCH(1);
-        break;
-    case 2:
-        NINFER_GQA_SMALL_T_I8_DISPATCH(2);
-        break;
-    case 3:
-        NINFER_GQA_SMALL_T_I8_DISPATCH(3);
-        break;
-    case 4:
-        NINFER_GQA_SMALL_T_I8_DISPATCH(4);
-        break;
-    case 5:
-        NINFER_GQA_SMALL_T_I8_DISPATCH(5);
-        break;
-    case 6:
-        NINFER_GQA_SMALL_T_I8_DISPATCH(6);
-        break;
-    default:
-        throw std::invalid_argument("gqa_attention_small_t_launch: unsupported T");
-    }
+        switch (invocation.width) {
+        case 1:
+            NINFER_GQA_SMALL_T_I8_DISPATCH(1);
+            break;
+        case 2:
+            NINFER_GQA_SMALL_T_I8_DISPATCH(2);
+            break;
+        case 3:
+            NINFER_GQA_SMALL_T_I8_DISPATCH(3);
+            break;
+        case 4:
+            NINFER_GQA_SMALL_T_I8_DISPATCH(4);
+            break;
+        case 5:
+            NINFER_GQA_SMALL_T_I8_DISPATCH(5);
+            break;
+        case 6:
+            NINFER_GQA_SMALL_T_I8_DISPATCH(6);
+            break;
+        default:
+            throw std::invalid_argument("gqa_attention_small_t_launch: unsupported T");
+        }
 #undef NINFER_GQA_SMALL_T_I8_DISPATCH
+    };
+    if (cache.packed_k) {
+        dispatch_variant.template operator()<true, true, true, true>();
+    } else if (cache.packed_v) {
+        dispatch_variant.template operator()<true, true, true, false>();
+    } else {
+        dispatch_variant.template operator()<false, false, false, false>();
+    }
 }
 
 template void gqa_small_t_partial_i8<Gqa27Geometry, GqaAppendInput>(
