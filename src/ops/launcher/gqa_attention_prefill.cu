@@ -3,6 +3,7 @@
 // gqa_attention_prefill_{bf16,i8,e8}.cu; this TU instantiates no fat kernels.
 #include "ops/launcher/gqa_attention.h"
 
+#include "core/device.h" // CUDA_CHECK
 #include "ops/kernel/gqa_attention_geometry.cuh"
 #include "ops/kernel/gqa_attention_kv_quant.cuh"
 #include "ops/kernel/gqa_attention_prefill_common.cuh"
