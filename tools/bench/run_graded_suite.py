@@ -412,6 +412,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     all_records: list[dict] = []
     all_failures: list[dict] = []
     aggregates: list[dict] = []
+    suite_rows: list[dict] = []
     index = 0
     for config in plan:
         index += 1
@@ -431,17 +432,47 @@ def main(argv: Sequence[str] | None = None) -> int:
             seed=args.seed,
         )
         aggregate = graded.aggregate_config(records)
-        aggregate.update({"artifact": entry["name"], "family": family, "kv_dtype": kv,
-                          "sampling": args.sampling})
-        aggregates.append(aggregate)
+        # Base summary row: matches run_serve_graded.write_outputs fieldnames.
+        summary_row = {
+            "target": spec.target,
+            "weights_id": records[0]["weights_id"] if records else None,
+            "mode": spec.mode_name,
+            "kv_dtype": spec.kv_dtype,
+            "sampling": spec.sampling_mode,
+        }
+        summary_row.update(aggregate)
+        aggregates.append(summary_row)
+        # Suite-side detail view keeps the artifact/family axes write_outputs
+        # does not carry.
+        suite_rows.append(
+            {
+                "artifact": entry["name"],
+                "family": family,
+                "kv_dtype": kv,
+                "sampling": args.sampling,
+                **aggregate,
+            }
+        )
         all_records.extend(records)
         all_failures.extend(failures)
         acc = "" if aggregate["accuracy"] is None else format(aggregate["accuracy"] * 100, ".1f")
         print(f"    accuracy={acc}% items={aggregate['items']} tok/s={aggregate['output_tok_s']}")
 
     graded.write_outputs(output_dir, all_records, aggregates, all_failures)
+    # Supplementary artifact x family view the graded writer does not carry.
+    if suite_rows:
+        import csv
+
+        suite_fields = ["artifact", "family", "kv_dtype", "sampling", "items", "accuracy",
+                        "wall_seconds_mean", "output_tok_s"]
+        with (output_dir / "summary.suite.csv").open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=suite_fields)
+            writer.writeheader()
+            writer.writerows(suite_rows)
     print(f"results : {output_dir / 'results.jsonl'}")
     print(f"summary : {output_dir / 'summary.csv'}")
+    if suite_rows:
+        print(f"details : {output_dir / 'summary.suite.csv'}")
     return 1 if all_failures else 0
 
 

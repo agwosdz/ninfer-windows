@@ -333,6 +333,22 @@ def validate_graded_server_start(
 ) -> tuple[str, str]:
     corpus.require_server_log_identity(event, "server_start")
     engine = event.get("engine", {})
+    # Compare only the fields the graded campaign controls. The server_start
+    # engine record carries additional startup-frozen keys that legitimately
+    # differ across server versions; exact dict equality against a subset
+    # would wrongly reject valid launches.
+    actual = {
+        "device": engine.get("device"),
+        "max_context": engine.get("max_context"),
+        "kv_capacity": engine.get("kv_capacity"),
+        "prefill_chunk": engine.get("prefill_chunk"),
+        "kv_cache": engine.get("kv_cache"),
+        "cuda_graph": engine.get("cuda_graph"),
+        "prefix_reuse": engine.get("prefix_reuse"),
+        "speculative_backend": engine.get("speculative_backend"),
+        "speculative_draft_window": engine.get("speculative_draft_window"),
+        "proposal_head": engine.get("proposal_head"),
+    }
     expected_engine = {
         "device": device,
         "max_context": max_context,
@@ -345,8 +361,18 @@ def validate_graded_server_start(
         "speculative_draft_window": spec.draft_tokens,
         "proposal_head": "optimized" if spec.draft_tokens else "full",
     }
-    if engine != expected_engine:
-        raise GradedCampaignError(f"server_start Engine configuration mismatch: {engine!r}")
+    if actual != expected_engine:
+        raise GradedCampaignError(f"server_start Engine configuration mismatch: {actual!r} != {expected_engine!r}")
+    if event.get("sampling_defaults", {}).get("greedy") != (spec.sampling_mode == "greedy"):
+        raise GradedCampaignError(
+            "server_start sampling mode does not match the campaign: "
+            f"{event.get('sampling_defaults', {}).get('greedy')!r}"
+        )
+    if event.get("artifact", {}).get("target") != spec.target:
+        raise GradedCampaignError(
+            "loaded artifact target mismatch: "
+            f"{event.get('artifact', {}).get('target')!r} != {spec.target!r}"
+        )
     weights_id = event.get("artifact", {}).get("weights_id")
     if not isinstance(weights_id, str) or not weights_id:
         raise GradedCampaignError("server_start has no canonical artifact weights_id")
@@ -379,7 +405,11 @@ def run_graded_config(
     seed: int,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Run one configuration; returns (item records, failures)."""
-    log_path = output_dir / f"serve_{spec.target}_{spec.mode_name}_{spec.kv_dtype}.jsonl"
+    # The artifact stem distinguishes sibling variants (e.g. qwen3_6_27b vs
+    # qwen3_6_27b_nvfp4) that share the same target family, so each config gets
+    # its own request-log file instead of appending onto a sibling's.
+    log_name = f"serve_{spec.target}_{spec.artifact.stem}_{spec.mode_name}_{spec.kv_dtype}.jsonl"
+    log_path = output_dir / log_name
     records: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
     command = graded_server_command(serve, spec, log_path, port, device, max_context)
