@@ -13,13 +13,13 @@ bench = [
 ]
 # tools/convert: quantization, safetensors packing, recipe verification.
 convert = [
-    "numpy>=1.24",
+    "numpy>=2.2,<3",
     "safetensors",
     "transformers>=4.40",
 ]
 # tools/reference/qwen3_6_{27b,35b}_a3b: artifact-native FP diagnostic.
 reference = [
-    "numpy>=1.24",
+    "numpy>=2.2,<3",
     "tokenizers>=0.22",
     "flash-linear-attention>=0.5.1",
     "transformers>=5.12",
@@ -31,20 +31,13 @@ reference = [
 flash-attn = [
     "flash-attn",
 ]
-# eval/ harness backend (eval/requirements.txt remains the pinned source).
-eval = [
-    "PyYAML==6.0.3",
-    "rich==15.0.0",
-    "evalscope[bfcl,needle-haystack]==1.9.0",
-    "soundfile==0.14.0",
-]
 
 [dependency-groups]
 # Test runners plus the numerics the convert/verify test battery imports.
 dev = [
     "pytest",
     "torch>=2.7",
-    "numpy>=1.24",
+    "numpy>=2.2,<3",
     "safetensors",
 ]
 
