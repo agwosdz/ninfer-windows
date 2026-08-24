@@ -61,3 +61,9 @@ set_target_properties(ninfer_kv_shfl_probe PROPERTIES
 add_executable(ninfer_kv_hadamard_dump test_hadamard_dump.cu)
 set_target_properties(ninfer_kv_hadamard_dump PROPERTIES
   CUDA_STANDARD 17 CUDA_STANDARD_REQUIRED ON)
+
+# packed-V codec round trip (diagnostic; not a ctest).
+add_executable(ninfer_kv_v_codec_roundtrip test_v_codec_roundtrip.cu)
+set_target_properties(ninfer_kv_v_codec_roundtrip PROPERTIES
+  CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED ON)
+target_include_directories(ninfer_kv_v_codec_roundtrip PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../src)
