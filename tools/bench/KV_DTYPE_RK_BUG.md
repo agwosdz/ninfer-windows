@@ -45,3 +45,11 @@ numbers) is consistent with a scale error rather than pure index garbage —
 the E8 K unit-tests pass, so K is likely fine and the corruption may be
 **packed-V only** (plain int4 V), which every rk variant shares (`PackedV`).
 A focused test should therefore check **V alone** first.
+
+## Backport requirement (once the fix lands on master)
+
+When the packed-V defect is fixed and verified on master, the same fix must
+be applied to:
+
+- `feat/compressed-kv-storages`
+- `pr1-compressed-kv`
