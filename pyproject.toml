@@ -3,7 +3,9 @@ name = "ninfer-tooling"
 version = "0.1.0"
 description = "NInfer Python tooling: benchmark suites, corpus baker, conversion, reference diagnostics."
 requires-python = ">=3.12,<3.13"
-dependencies = []
+dependencies = [
+    "compressed-tensors[convert]>=0.18.0",
+]
 
 [project.optional-dependencies]
 # tools/bench/make_bench_corpus.py: local tokenizer bake (never downloads).
