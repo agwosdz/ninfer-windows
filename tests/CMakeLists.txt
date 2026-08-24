@@ -196,7 +196,10 @@ set(ninfer_op_tests
   scalar
   cast
   scatter
-  position)
+  position
+  dflash2_dynamic_conv
+  dflash2_predecessor_ids
+  dflash2_selector_lattice)
 foreach(op IN LISTS ninfer_op_tests)
   ninfer_add_op_test(ninfer_${op}_test
     SOURCES ops/test_${op}.cpp
