@@ -1,17 +1,22 @@
 #!/usr/bin/env python3
 """Run the native NInfer product performance matrix.
 
-The matrix is intentionally layered instead of fully factorial:
+The matrix sweeps three experiment axes on top of layered test shapes instead of
+a fully factorial campaign:
 
-* k=3 is the primary MTP path to evaluate.
-* k=0 and k=5 are baseline/max-window controls.
-* k=0..5 is swept on representative context-decode cases.
-* CUDA graph is compared only for decode-bearing tests.
-* Prefill-only tests sweep length and chunk size, but not graph on/off.
+* Draft models: speculative modes named like the serving campaigns
+  (mtp0, mtp1..mtp5, dflash7). Core presets compare mtp0 baseline, the mtp3
+  primary path, and the dflash7 DFlash round; mtp0..mtp5 is additionally swept
+  on representative context-decode cases for MTP window tuning.
+* Variants: repeatable ``--variant NAME=PATH`` artifacts (for example the
+  registered qwen3.8-27b groupwise-int, nvfp4, and groupwise-int-dflash2
+  profiles). Every case runs once per selected variant.
+* KV-cache compression: ``--kv-dtype bf16,int8`` selects INT8-G64 or BF16 KV
+  storage for every case.
 
 Raw ninfer_bench reports stay under profiles/bench. This script writes a
 descriptive manifest, exact commands, per-case logs, raw JSON reports, and a flat
-summary CSV/JSON that is easy to compare across runs.
+summary CSV/JSON that is easy to compare across configurations.
 """
 
 from __future__ import annotations
@@ -38,9 +43,30 @@ PREFILL_CHUNKS = (128, 256, 512, 1024, 2048, 4096)
 PURE_DECODE_GENS = (16, 64, 128, 512, 2048)
 CONTEXT_CORE = ((512, 512), (2048, 512), (8192, 512))
 CONTEXT_FULL_EXTRA = ((32768, 256), (65536, 128))
-PRIMARY_KS = (0, 3, 5)
-SWEEP_KS = (0, 1, 2, 3, 4, 5)
-REPORT_SCHEMA_VERSION = 11
+
+# Speculative modes use the run_serve_corpus.py vocabulary so engine-level and
+# serving-level results join on one set of names.
+DRAFT_MODES: dict[str, tuple[str, int]] = {
+    "mtp0": ("none", 0),
+    "mtp1": ("mtp", 1),
+    "mtp2": ("mtp", 2),
+    "mtp3": ("mtp", 3),
+    "mtp4": ("mtp", 4),
+    "mtp5": ("mtp", 5),
+    "dflash7": ("dflash", 7),
+}
+PRIMARY_DRAFTS = ("mtp0", "mtp3", "dflash7")
+MTP_SWEEP_DRAFTS = ("mtp0", "mtp1", "mtp2", "mtp3", "mtp4", "mtp5")
+KV_DTYPES = ("bf16", "int8")
+
+# Near-capacity stress prompts are pinned corpus offsets per speculative mode so
+# repeated campaigns measure identical request shapes.
+TAIL_PROMPT_OFFSETS: dict[tuple[str, int], int] = {
+    ("mtp", 3): 8174,
+    ("mtp", 5): 8170,
+    ("dflash", 7): 8162,
+}
+REPORT_SCHEMA_VERSION = 12
 REPORT_ARTIFACT_TYPE = "ninfer_bench_report"
 REPORT_TOOL = "ninfer_bench"
 
@@ -63,9 +89,34 @@ def pair_list(values: Iterable[tuple[int, int]]) -> str:
     return ";".join(f"{p},{g}" for p, g in values)
 
 
-def mtp_args(k: int) -> tuple[str, ...]:
-    args = ("--mtp-draft-tokens", str(k))
-    return (*args, "--lm-head-draft") if k > 0 else args
+def draft_spec(mode: str) -> tuple[str, int]:
+    return DRAFT_MODES[mode]
+
+
+def draft_tag(mode: str) -> str:
+    backend, tokens = draft_spec(mode)
+    if backend == "none":
+        return "k0"
+    prefix = "df" if backend == "dflash" else "k"
+    return f"{prefix}{tokens}"
+
+
+def uses_cuda_graph(mode: str) -> bool:
+    # The qwen3.8-27B DFlash2 decode round runs eager by target contract; keep
+    # requested options and reported decode_path truthful instead of letting the
+    # Engine silently downgrade a graph request.
+    return draft_spec(mode)[0] != "dflash"
+
+
+def draft_args(mode: str) -> tuple[str, ...]:
+    """Bench flags for one speculative mode; mirrors the serve campaign flags."""
+    backend, tokens = draft_spec(mode)
+    if backend == "none":
+        return ()
+    args = ("--spec", backend, "--draft-tokens", str(tokens), "--lm-head-draft")
+    if not uses_cuda_graph(mode):
+        args += ("--no-cuda-graph",)
+    return args
 
 
 def shell_join(command: Sequence[str]) -> str:
@@ -91,15 +142,33 @@ def add_repetition_args(
     return [*base_args, "-r", str(repetitions), "--warmup", str(warmup)]
 
 
-def build_cases(preset: str) -> list[BenchCase]:
+def graph_suffix(mode: str, graph: bool) -> str:
+    if not uses_cuda_graph(mode):
+        return "eager"
+    return "graph" if graph else "eager"
+
+
+def build_cases(preset: str, drafts: Sequence[str]) -> list[BenchCase]:
     if preset == "smoke":
         return [
-            BenchCase("prefill_length", "prefill_p128_k0", ("-p", "128", *mtp_args(0)), 1, 0),
-            BenchCase("pure_decode", "tg8_k3_graph", ("-n", "8", *mtp_args(3)), 1, 0),
+            BenchCase(
+                "prefill_length",
+                f"prefill_p128_{draft_tag('mtp0')}",
+                ("-p", "128", *draft_args("mtp0")),
+                1,
+                0,
+            ),
+            BenchCase(
+                "pure_decode",
+                f"tg8_{draft_tag('mtp3')}_graph",
+                ("-n", "8", *draft_args("mtp3")),
+                1,
+                0,
+            ),
             BenchCase(
                 "context_decode",
-                "ctx_p128_g8_k3_graph",
-                ("-pg", "128,8", "--max-ctx", "256", *mtp_args(3)),
+                f"ctx_p128_g8_{draft_tag('dflash7')}_eager",
+                ("-pg", "128,8", "--max-ctx", "256", *draft_args("dflash7")),
                 1,
                 0,
             ),
@@ -112,30 +181,30 @@ def build_cases(preset: str) -> list[BenchCase]:
 
     cases: list[BenchCase] = []
 
-    for k in PRIMARY_KS:
+    for mode in drafts:
         cases.append(
             BenchCase(
                 "prefill_length",
-                f"prefill_lengths_k{k}",
-                ("-p", csv_list(prefill_lengths), *mtp_args(k)),
+                f"prefill_lengths_{draft_tag(mode)}",
+                ("-p", csv_list(prefill_lengths), *draft_args(mode)),
                 3,
                 1,
                 "prefill length curve",
             )
         )
 
-    for k in PRIMARY_KS:
+    for mode in drafts:
         for chunk in PREFILL_CHUNKS:
             cases.append(
                 BenchCase(
                     "prefill_chunk",
-                    f"prefill_p8192_chunk{chunk}_k{k}",
+                    f"prefill_p8192_chunk{chunk}_{draft_tag(mode)}",
                     (
                         "-p",
                         "8192",
                         "--prefill-chunk",
                         str(chunk),
-                        *mtp_args(k),
+                        *draft_args(mode),
                     ),
                     3,
                     1,
@@ -143,16 +212,16 @@ def build_cases(preset: str) -> list[BenchCase]:
                 )
             )
 
-    for k in PRIMARY_KS:
-        for graph in (True, False):
-            graph_suffix = "graph" if graph else "eager"
-            args = ["-n", csv_list(PURE_DECODE_GENS), *mtp_args(k)]
+    for mode in drafts:
+        for graph in ((True, False) if uses_cuda_graph(mode) else (False,)):
+            suffix = graph_suffix(mode, graph)
+            args = ["-n", csv_list(PURE_DECODE_GENS), *draft_args(mode)]
             if not graph:
                 args.append("--no-cuda-graph")
             cases.append(
                 BenchCase(
                     "pure_decode",
-                    f"tg_lengths_k{k}_{graph_suffix}",
+                    f"tg_lengths_{draft_tag(mode)}_{suffix}",
                     tuple(args),
                     5,
                     1,
@@ -160,16 +229,16 @@ def build_cases(preset: str) -> list[BenchCase]:
                 )
             )
 
-    for k in PRIMARY_KS:
-        for graph in (True, False):
-            graph_suffix = "graph" if graph else "eager"
-            args = ["-pg", pair_list(context_pairs), *mtp_args(k)]
-            if not graph:
+    for mode in drafts:
+        for graph in ((True, False) if uses_cuda_graph(mode) else (False,)):
+            suffix = graph_suffix(mode, graph)
+            args = ["-pg", pair_list(context_pairs), *draft_args(mode)]
+            if not graph and uses_cuda_graph(mode):
                 args.append("--no-cuda-graph")
             cases.append(
                 BenchCase(
                     "context_decode",
-                    f"context_decode_k{k}_{graph_suffix}",
+                    f"context_decode_{draft_tag(mode)}_{suffix}",
                     tuple(args),
                     3,
                     1,
@@ -177,34 +246,38 @@ def build_cases(preset: str) -> list[BenchCase]:
                 )
             )
 
-    for k in SWEEP_KS:
+    for mode in MTP_SWEEP_DRAFTS:
         cases.append(
             BenchCase(
                 "mtp_sweep",
-                f"mtp_sweep_k{k}_graph",
-                ("-pg", pair_list(sweep_pairs), *mtp_args(k)),
+                f"mtp_sweep_{draft_tag(mode)}_graph",
+                ("-pg", pair_list(sweep_pairs), *draft_args(mode)),
                 3,
                 1,
                 "primary MTP draft-window sweep",
             )
         )
 
-    for k, prompt in ((3, 8174), (5, 8170)):
-        for graph in (True, False):
-            graph_suffix = "graph" if graph else "eager"
+    for mode in drafts:
+        spec = draft_spec(mode)
+        prompt_offset = TAIL_PROMPT_OFFSETS.get(spec)
+        if prompt_offset is None:
+            continue
+        for graph in ((True, False) if uses_cuda_graph(mode) else (False,)):
+            suffix = graph_suffix(mode, graph)
             args = [
                 "-pg",
-                f"{prompt},12",
+                f"{prompt_offset},12",
                 "--max-ctx",
                 "8192",
-                *mtp_args(k),
+                *draft_args(mode),
             ]
-            if not graph:
+            if not graph and uses_cuda_graph(mode):
                 args.append("--no-cuda-graph")
             cases.append(
                 BenchCase(
                     "tail_stress",
-                    f"tail_k{k}_{graph_suffix}",
+                    f"tail_{draft_tag(mode)}_{suffix}",
                     tuple(args),
                     3,
                     1,
@@ -242,6 +315,55 @@ def max_prompt_in_cases(cases: Sequence[BenchCase]) -> int:
     return max_prompt
 
 
+def parse_variant(value: str, seen: dict[str, Path]) -> None:
+    name, separator, raw_path = value.partition("=")
+    if not separator or not name or not raw_path:
+        raise SystemExit(f"invalid --variant value {value!r}; expected NAME=PATH")
+    if name in seen:
+        raise SystemExit(f"duplicate variant name: {name}")
+    path = Path(raw_path).expanduser().resolve()
+    if not path.is_file():
+        raise SystemExit(f"artifact not found for variant {name!r}: {path}")
+    seen[name] = path
+
+
+def parse_variants(values: Sequence[str], default_weights: Path) -> tuple[tuple[str, Path], ...]:
+    seen: dict[str, Path] = {}
+    for value in values:
+        parse_variant(value, seen)
+    if not seen:
+        if not default_weights.is_file():
+            raise SystemExit(f"weights file not found: {default_weights}")
+        return (("default", default_weights),)
+    return tuple(seen.items())
+
+
+def parse_kv_dtypes(text: str | None) -> tuple[str, ...]:
+    if not text:
+        return ("bf16",)
+    seen: dict[str, None] = {}
+    for piece in text.split(","):
+        dtype = piece.strip().lower()
+        if dtype not in KV_DTYPES:
+            allowed = ", ".join(KV_DTYPES)
+            raise SystemExit(f"unsupported --kv-dtype {piece!r}; expected {allowed}")
+        seen[dtype] = None
+    return tuple(seen)
+
+
+def parse_drafts(text: str | None) -> tuple[str, ...]:
+    if not text:
+        return PRIMARY_DRAFTS
+    seen: dict[str, None] = {}
+    for piece in text.split(","):
+        mode = piece.strip().lower()
+        if mode not in DRAFT_MODES:
+            allowed = ", ".join(DRAFT_MODES)
+            raise SystemExit(f"unknown draft mode {piece!r}; expected {allowed}")
+        seen[mode] = None
+    return tuple(seen)
+
+
 def load_bench_report(report_path: Path) -> dict[str, Any]:
     report = json.loads(report_path.read_text(encoding="utf-8"))
     if not isinstance(report, dict):
@@ -261,7 +383,11 @@ def load_bench_report(report_path: Path) -> dict[str, Any]:
     return report
 
 
-def report_rows(report_path: Path, case: BenchCase) -> list[dict[str, Any]]:
+def report_rows(
+    report_path: Path,
+    case: BenchCase,
+    axes: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     report = load_bench_report(report_path)
     config = report.get("config", {})
     load = report.get("load", {})
@@ -289,7 +415,8 @@ def report_rows(report_path: Path, case: BenchCase) -> list[dict[str, Any]]:
             "kv_capacity": memory.get("kv_capacity"),
             "prefill_chunk": config.get("prefill_chunk"),
             "kv_cache": config.get("kv_cache"),
-            "mtp_draft_tokens": config.get("mtp_draft_tokens"),
+            "speculative_backend": config.get("speculative_backend"),
+            "draft_tokens": config.get("draft_tokens"),
             "proposal_head": config.get("proposal_head"),
             "decode_path": config.get("decode_path"),
             "decode_graph_primed": config.get("decode_graph_prime", {}).get("primed"),
@@ -332,6 +459,8 @@ def report_rows(report_path: Path, case: BenchCase) -> list[dict[str, Any]]:
             ),
             "gpu_name": report.get("environment", {}).get("gpu_name"),
         }
+        if axes:
+            row.update(axes)
         rows.append(row)
     return rows
 
@@ -369,17 +498,20 @@ def write_manifest(
     args: argparse.Namespace,
     cases: Sequence[BenchCase],
     commands: Sequence[dict[str, Any]],
+    variants: Sequence[tuple[str, Path]],
+    kv_dtypes: Sequence[str],
+    drafts: Sequence[str],
 ) -> None:
     manifest = {
         "artifact_type": "ninfer_bench_matrix_run",
-        "schema_version": 3,
+        "schema_version": 4,
         "created_at_utc": dt.datetime.now(dt.UTC).isoformat(),
         "preset": args.preset,
-        "primary_mtp_draft_tokens": 3,
-        "primary_proposal_head": "optimized",
+        "draft_modes": list(drafts),
+        "variants": [{"name": name, "artifact": str(path)} for name, path in variants],
+        "kv_dtypes": list(kv_dtypes),
         "repo_root": str(REPO_ROOT),
         "bench": str(args.bench),
-        "artifact": str(args.weights),
         "corpus": str(args.corpus),
         "corpus_tokens": count_corpus_tokens(args.corpus),
         "dry_run": args.dry_run,
@@ -387,9 +519,10 @@ def write_manifest(
         "case_count": len(cases),
         "commands": list(commands),
         "notes": [
-            "k=3 with the optimized proposal head is the primary MTP path.",
-            "Use context_decode and mtp_sweep rows for MTP efficiency decisions.",
-            "tg rows use a one-token seed and report G decode tokens after the begin token.",
+            "Primary speculative comparison: mtp0 baseline, mtp3 primary MTP path, dflash7 DFlash.",
+            "mtp0..mtp5 is swept by the mtp_sweep suite for MTP window decisions.",
+            "DFlash cases run eager: the qwen3.8-27B DFlash2 decode round does not capture CUDA graphs.",
+            "Use variant x kv-dtype x draft columns in summary.csv for paired configuration deltas.",
         ],
     }
     (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
@@ -400,7 +533,30 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--preset", choices=("smoke", "core", "full"), default="core")
     parser.add_argument("--bench", type=Path, default=DEFAULT_BENCH)
     parser.add_argument(
-        "--weights", type=Path, default=DEFAULT_WEIGHTS, help=".ninfer artifact passed to the bench"
+        "--weights",
+        type=Path,
+        default=DEFAULT_WEIGHTS,
+        help="single-variant .ninfer artifact used when --variant is not given",
+    )
+    parser.add_argument(
+        "--variant",
+        action="append",
+        default=[],
+        metavar="NAME=PATH",
+        help="named .ninfer artifact variant; repeat to sweep multiple variants",
+    )
+    parser.add_argument(
+        "--kv-dtype",
+        default="bf16",
+        help="comma list among bf16,int8 swept over every case (default: bf16)",
+    )
+    parser.add_argument(
+        "--drafts",
+        default=None,
+        help=(
+            "comma list of speculative modes "
+            f"({','.join(DRAFT_MODES)}); default: {','.join(PRIMARY_DRAFTS)}"
+        ),
     )
     parser.add_argument("--corpus", type=Path, default=DEFAULT_CORPUS)
     parser.add_argument("--output-dir", type=Path, default=None)
@@ -430,11 +586,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     args.weights = args.weights.expanduser().resolve()
     args.corpus = args.corpus.expanduser().resolve()
 
-    if not args.weights.is_file():
-        raise SystemExit(f"weights file not found: {args.weights}")
+    variants = parse_variants(args.variant, args.weights)
+    kv_dtypes = parse_kv_dtypes(args.kv_dtype)
+    drafts = parse_drafts(args.drafts)
     corpus_tokens = count_corpus_tokens(args.corpus)
 
-    all_cases = build_cases(args.preset)
+    all_cases = build_cases(args.preset, drafts)
     cases = filtered_cases(all_cases, args.suite, args.limit)
     if not cases:
         raise SystemExit("selected matrix is empty")
@@ -456,40 +613,47 @@ def main(argv: Sequence[str] | None = None) -> int:
     command_records: list[dict[str, Any]] = []
     commands_sh: list[str] = []
     for case in cases:
-        report_path = json_dir / case.suite / f"{case.name}.json"
-        report_path.parent.mkdir(parents=True, exist_ok=True)
-        base_args = [
-            str(args.bench),
-            "--weights",
-            str(args.weights),
-            "--corpus",
-            str(args.corpus),
-            "--device",
-            str(args.device),
-            *case.args,
-            "--output",
-            "json",
-            "--output-file",
-            str(report_path),
-        ]
-        command = add_repetition_args(base_args, case, args.repetitions, args.warmup)
-        command_records.append(
-            {
-                "suite": case.suite,
-                "case": case.name,
-                "report": str(report_path),
-                "notes": case.notes,
-                "command": command,
-            }
-        )
-        commands_sh.append(shell_join(command))
+        for kv_dtype in kv_dtypes:
+            for variant_name, variant_artifact in variants:
+                report_path = json_dir / case.suite / f"{case.name}_{kv_dtype}_{variant_name}.json"
+                report_path.parent.mkdir(parents=True, exist_ok=True)
+                base_args = [
+                    str(args.bench),
+                    "--weights",
+                    str(variant_artifact),
+                    "--corpus",
+                    str(args.corpus),
+                    "--device",
+                    str(args.device),
+                    "--kv-dtype",
+                    kv_dtype,
+                    *case.args,
+                    "--output",
+                    "json",
+                    "--output-file",
+                    str(report_path),
+                ]
+                command = add_repetition_args(base_args, case, args.repetitions, args.warmup)
+                command_records.append(
+                    {
+                        "suite": case.suite,
+                        "case": case.name,
+                        "variant": variant_name,
+                        "artifact": str(variant_artifact),
+                        "kv_dtype": kv_dtype,
+                        "report": str(report_path),
+                        "notes": case.notes,
+                        "command": command,
+                    }
+                )
+                commands_sh.append(shell_join(command))
     commands_text = "#!/usr/bin/env bash\nset -euo pipefail\n\n" + "\n\n".join(commands_sh) + "\n"
     (out_dir / "commands.sh").write_text(commands_text, encoding="utf-8")
-    write_manifest(out_dir, args, cases, command_records)
+    write_manifest(out_dir, args, cases, command_records, variants, kv_dtypes, drafts)
 
     if args.dry_run:
         print(f"wrote dry-run matrix to {out_dir}")
-        print(f"cases: {len(cases)}")
+        print(f"cases: {len(command_records)} ({len(cases)} shapes x {len(kv_dtypes)} kv x {len(variants)} variants)")
         return 0
 
     failures: list[dict[str, Any]] = []
@@ -520,25 +684,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit(f"bench binary not found after build: {args.bench}")
 
     for index, record in enumerate(command_records, start=1):
-        case = cases[index - 1]
+        axis_stride = len(kv_dtypes) * len(variants)
+        case = cases[(index - 1) // axis_stride]
         report_path = Path(record["report"])
         if args.resume and report_path.is_file():
             try:
                 load_bench_report(report_path)
-                print(f"[{index}/{len(cases)}] skip {case.name} (existing report)")
+                print(f"[{index}/{len(command_records)}] skip {record['report']} (existing report)")
                 continue
             except (json.JSONDecodeError, OSError, TypeError, ValueError):
                 pass
 
-        stdout_path = log_dir / f"{case.suite}.{case.name}.stdout.txt"
-        stderr_path = log_dir / f"{case.suite}.{case.name}.stderr.txt"
-        print(f"[{index}/{len(cases)}] run {case.suite}/{case.name}")
+        stdout_path = log_dir / f"{Path(record['report']).stem}.stdout.txt"
+        stderr_path = log_dir / f"{Path(record['report']).stem}.stderr.txt"
+        print(f"[{index}/{len(command_records)}] run {case.suite}/{Path(record['report']).stem}")
         rc = run_command(record["command"], stdout_path, stderr_path)
         if rc != 0:
             failures.append(
                 {
-                    "suite": case.suite,
-                    "case": case.name,
+                    "suite": record["suite"],
+                    "case": record["case"],
+                    "variant": record["variant"],
+                    "kv_dtype": record["kv_dtype"],
                     "returncode": rc,
                     "stdout": str(stdout_path),
                     "stderr": str(stderr_path),
@@ -550,8 +717,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not report_path.is_file():
             failures.append(
                 {
-                    "suite": case.suite,
-                    "case": case.name,
+                    "suite": record["suite"],
+                    "case": record["case"],
+                    "variant": record["variant"],
+                    "kv_dtype": record["kv_dtype"],
                     "returncode": rc,
                     "error": "report file was not created",
                     "stdout": str(stdout_path),
@@ -561,17 +730,30 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
 
     rows: list[dict[str, Any]] = []
-    for record, case in zip(command_records, cases, strict=True):
+    for record in command_records:
         report_path = Path(record["report"])
         if not report_path.is_file():
             continue
         try:
-            rows.extend(report_rows(report_path, case))
+            rows.extend(
+                report_rows(
+                    report_path,
+                    # Suite/name bookkeeping comes from the record itself because
+                    # expanded report names carry the kv/variant suffixes.
+                    BenchCase(record["suite"], Path(record["report"]).stem, (), 1, 0),
+                    axes={
+                        "variant": record["variant"],
+                        "kv_dtype": record["kv_dtype"],
+                    },
+                )
+            )
         except (json.JSONDecodeError, OSError, KeyError, TypeError, ValueError) as exc:
             failures.append(
                 {
-                    "suite": case.suite,
-                    "case": case.name,
+                    "suite": record["suite"],
+                    "case": record["case"],
+                    "variant": record["variant"],
+                    "kv_dtype": record["kv_dtype"],
                     "report": str(report_path),
                     "error": f"failed to parse report: {exc}",
                 }
@@ -585,7 +767,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"completed with {len(failures)} failure(s); see {out_dir / 'failures.json'}")
         return 1
 
-    print(f"completed {len(cases)} cases")
+    print(f"completed {len(command_records)} benchmark points")
     print(f"summary: {out_dir / 'summary.csv'}")
     return 0
 
