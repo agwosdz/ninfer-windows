@@ -11,12 +11,21 @@
 
 namespace {
 
-using AlignedBacking = std::unique_ptr<void, decltype(&std::free)>;
+using AlignedBacking = std::unique_ptr<void, void (*)(void*)>;
 
 AlignedBacking make_backing(std::size_t bytes) {
-    void* data = std::aligned_alloc(256, bytes);
+    void* data = nullptr;
+    void (*release)(void*) = &std::free;
+#ifdef _MSC_VER
+    // MSVC provides no std::aligned_alloc in C++ mode; _aligned_malloc pairs
+    // with _aligned_free.
+    data    = _aligned_malloc(bytes, 256);
+    release = &_aligned_free;
+#else
+    data = std::aligned_alloc(256, bytes);
+#endif
     if (data == nullptr) { throw std::bad_alloc(); }
-    return AlignedBacking(data, &std::free);
+    return AlignedBacking(data, release);
 }
 
 int fail(const char* label) {
