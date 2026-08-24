@@ -15,7 +15,7 @@
 
 namespace ninfer::bench {
 
-inline constexpr int kSchemaVersion                   = 11;
+inline constexpr int kSchemaVersion                   = 12;
 inline constexpr std::string_view kArtifactType       = "ninfer_bench_report";
 inline constexpr std::string_view kDefaultCorpusPath  = "bench/fixtures/bench_corpus.ids";
 inline constexpr int kDecodeSeedTokens                = 1;
@@ -26,6 +26,9 @@ inline constexpr int kDefaultWarmup                   = 1;
 inline constexpr std::uint32_t kDefaultPrefillChunk   = 1024;
 inline constexpr std::uint32_t kPrefillChunkAlignment = 128;
 inline constexpr std::uint32_t kMaxMtpDraftTokens     = 5;
+// Syntactic cap only: the Engine enforces the target-specific DFlash window
+// (35B-A3B v1 up to 15, qwen3.8-27B v2 exactly up to 7) at startup.
+inline constexpr std::uint32_t kMaxDFlashDraftTokens  = 15;
 
 enum class TestKind { Prefill, Decode, PrefillDecode };
 
@@ -47,7 +50,9 @@ struct BenchTest {
     }
 
     [[nodiscard]] std::uint32_t requested_output_tokens() const;
-    [[nodiscard]] std::uint32_t required_context(std::uint32_t mtp_draft_tokens) const;
+    // The speculative draft window; the +2*k margin covers both MTP rounds and
+    // DFlash blocks (which license at most k+1 tokens per round).
+    [[nodiscard]] std::uint32_t required_context(std::uint32_t draft_tokens) const;
 };
 
 enum class OutputFormat { Table, Json, Csv };
@@ -62,9 +67,10 @@ struct BenchOptions {
     int warmup      = kDefaultWarmup;
     std::optional<std::uint32_t> max_context;
     std::uint32_t prefill_chunk    = kDefaultPrefillChunk;
-    KvCacheStorage kv_cache        = KvCacheStorage::BFloat16;
-    std::uint32_t mtp_draft_tokens = 0;
-    ProposalHead proposal_head     = ProposalHead::Full;
+    KvCacheStorage kv_cache           = KvCacheStorage::BFloat16;
+    SpeculativeBackend speculative_backend = SpeculativeBackend::None;
+    std::uint32_t draft_tokens        = 0;
+    ProposalHead proposal_head        = ProposalHead::Full;
     int device                     = 0;
     bool use_cuda_graph            = true;
     bool profile_measured          = false;
@@ -106,7 +112,8 @@ struct BenchEnvironment {
     std::uint32_t max_context                      = 0;
     std::uint32_t prefill_chunk                    = kDefaultPrefillChunk;
     KvCacheStorage kv_cache                        = KvCacheStorage::BFloat16;
-    std::uint32_t mtp_draft_tokens                 = 0;
+    SpeculativeBackend speculative_backend         = SpeculativeBackend::None;
+    std::uint32_t draft_tokens                     = 0;
     ProposalHead proposal_head                     = ProposalHead::Full;
     bool use_cuda_graph                            = true;
     bool decode_graph_primed                       = false;
@@ -123,14 +130,14 @@ std::string usage_text(std::string_view program);
 std::vector<BenchTest> expand_tests(const BenchOptions& options);
 std::uint32_t resolve_max_context(const std::vector<BenchTest>& tests,
                                   std::optional<std::uint32_t> override_max_context,
-                                  std::uint32_t mtp_draft_tokens, bool use_cuda_graph);
+                                  std::uint32_t draft_tokens, bool use_cuda_graph);
 void validate_prompt_lengths(const std::vector<BenchTest>& tests, std::size_t corpus_tokens);
 
 std::vector<TokenId> load_corpus_ids(const std::string& path);
 std::vector<TokenId> prompt_slice(const std::vector<TokenId>& corpus, int n_prompt);
-std::string decode_path_name(bool use_cuda_graph, std::uint32_t mtp_draft_tokens);
-std::uint32_t decode_graph_prime_output_tokens(std::uint32_t mtp_draft_tokens);
-std::uint32_t decode_graph_prime_required_context(std::uint32_t mtp_draft_tokens);
+std::string decode_path_name(bool use_cuda_graph, SpeculativeBackend backend);
+std::uint32_t decode_graph_prime_output_tokens(std::uint32_t draft_tokens);
+std::uint32_t decode_graph_prime_required_context(std::uint32_t draft_tokens);
 
 Stats compute_stats(const std::vector<double>& values);
 std::vector<double> prefill_tok_s_series(const TestResult& result);
@@ -149,6 +156,7 @@ std::string format_csv(const BenchEnvironment& env, const std::vector<TestResult
 std::string json_escape(std::string_view value);
 std::string kv_cache_name(KvCacheStorage storage);
 std::string proposal_head_name(ProposalHead head);
+std::string speculative_backend_name(SpeculativeBackend backend);
 std::uint64_t file_size_or_zero(const std::string& path);
 
 } // namespace ninfer::bench
