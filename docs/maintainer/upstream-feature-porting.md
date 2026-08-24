@@ -136,6 +136,39 @@ the feature there.
 - Cleanup: git worktree remove <path>, git branch -d <merged-branch>, and/or delete the
   remote branch once the PR is merged, per the user's preference.
 
+## Task board as the standing driver
+
+This repository is worked through the DSH **task board** (sidebar "任务看板", the
+installed dsh-task-board plugin). Every piece of planned repo work that comes out of
+this workflow - an upstream PR to evaluate, a port to implement, a bench to run - is
+created as a board task rather than only handled in a chat turn.
+
+Defaults for repo tasks:
+
+- **Scope**: every planned piece of repo work becomes a board task; quick interactive
+  turns stay in chat, but anything structured (evaluate -> port -> verify -> PR) is a
+  task.
+- **Pinning**: tasks are pinned to this workspace (the repo checkout) and the repo agent
+  preset, so the Host executes them with the same checkout, permissions, and
+  environment as this session - including after the browser is closed.
+- **Execution**: the Host runs and settles the task; API quota is consumed by execution.
+  The board survives browser close; only the computer being asleep/hibernating or shut
+  down stops it (idle sleep protection is off by default and does not cover lid close,
+  manual sleep, hibernate, or wake-from-sleep).
+- **Cron**: recurring or "catch up" work (e.g. a periodic upstream-master sync scan) can
+  use the board's 5-field cron in the Host local timezone; missed triggers do not
+  backfill.
+
+When a task lands on the board for this repo:
+
+1. **Evaluate first** (section 1) - fetch the upstream ref via the DSH runtime GitHub
+   API, produce the "already have / not feasible / feasible" verdict, and the merged
+   edit plan.
+2. **Port on a worktree** (sections 2-4) inside the same repo checkout; the browser may
+   close once the task is running - the Host settles it with the pinned workspace.
+3. **Land** (section 5) - commit, push the feat branch, and open/merge the PR; then
+   sync local master and clean up the worktree and branch.
+
 ## Recurring local habits
 
 - Keep bin/ and worktrees/ (and the session helper .bat files) out of git; they're
