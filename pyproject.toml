@@ -2,7 +2,7 @@
 name = "ninfer-tooling"
 version = "0.1.0"
 description = "NInfer Python tooling: benchmark suites, corpus baker, conversion, reference diagnostics."
-requires-python = ">=3.11,<3.15"
+requires-python = ">=3.12,<3.13"
 dependencies = []
 
 [project.optional-dependencies]
