@@ -27,11 +27,16 @@ PagedKVCacheLayout plan_cache(LayoutBuilder& builder, std::uint32_t layers,
     if ((packed_v || rotate_k || rotate_v || packed_k || e8_lattice || e8_root) && !quantized) {
         throw std::invalid_argument("Packed or rotated KV requires quantized storage");
     }
-    if (rotate_v && !packed_v) {
-        throw std::invalid_argument("Rotated V requires packed V4 storage");
-    }
-    if (e8_lattice && !packed_k) {
-        throw std::invalid_argument("E8 lattice requires packed K storage");
+    // Closed set of supported compressed-KV combinations (see KvCacheStorage):
+    // bf16/int8 (plain), rk8v4, rk4v4, rk4v4-e8, rk2v4-e8.
+    const bool supported =
+        (!packed_v && !rotate_k && !rotate_v && !packed_k && !e8_lattice && !e8_root) ||
+        (packed_v && rotate_k && rotate_v && !packed_k && !e8_lattice && !e8_root) ||
+        (packed_v && rotate_k && rotate_v && packed_k && !e8_lattice && !e8_root) ||
+        (packed_v && rotate_k && rotate_v && !packed_k && e8_lattice && !e8_root) ||
+        (packed_v && rotate_k && rotate_v && !packed_k && !e8_lattice && e8_root);
+    if (!supported) {
+        throw std::invalid_argument("Unsupported compressed KV cache combination");
     }
 
     const std::uint32_t logical_pages = page_count(capacity);

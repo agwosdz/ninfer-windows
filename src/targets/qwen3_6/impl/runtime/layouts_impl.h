@@ -721,8 +721,7 @@ make_sequence_planner_impl(DeviceContext& device, const EngineOptions& options,
         options.kv_cache == KvCacheStorage::RotatedInt4KeyInt4ValueGroup64 ||
         options.kv_cache == KvCacheStorage::RK4V4E8 ||
         options.kv_cache == KvCacheStorage::RK2V4E8,
-        .kv_packed_k = options.kv_cache == KvCacheStorage::RotatedInt4KeyInt4ValueGroup64 ||
-        options.kv_cache == KvCacheStorage::RK4V4E8,
+        .kv_packed_k = options.kv_cache == KvCacheStorage::RotatedInt4KeyInt4ValueGroup64,
         .kv_e8_lattice = options.kv_cache == KvCacheStorage::RK4V4E8,
         .kv_e8_root    = options.kv_cache == KvCacheStorage::RK2V4E8,
         .proposal_head  = options.speculative.proposal_head,

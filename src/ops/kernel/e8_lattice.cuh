@@ -32,77 +32,17 @@ __device__ __forceinline__ void hadamard_rot_8d(const float in[8], float out[8])
     out[7] = (b3 - b7) * kInvSqrt8;
 }
 
-// Algebraic Conway-Sloane E8 Nearest Lattice Point Projection
-// Given an arbitrary 8D real vector x, finds nearest point p in E8 = D8 U (D8 + 0.5*1)
-__device__ __forceinline__ void e8_project_8d_fast(const float x[8], float out[8]) {
-    // 1. Nearest point in D8 (even sum of integers)
-    float f_x[8];
-    int sum_f = 0;
-    float max_err = -1.0f;
-    int worst_dim = 0;
-
-    #pragma unroll
-    for (int i = 0; i < 8; ++i) {
-        f_x[i] = rintf(x[i]);
-        sum_f += static_cast<int>(f_x[i]);
-        float err = fabsf(x[i] - f_x[i]);
-        if (err > max_err) {
-            max_err = err;
-            worst_dim = i;
-        }
-    }
-
-    float d8[8];
-    #pragma unroll
-    for (int i = 0; i < 8; ++i) {
-        d8[i] = f_x[i];
-    }
-    if ((sum_f & 1) != 0) {
-        d8[worst_dim] += (x[worst_dim] >= f_x[worst_dim]) ? 1.0f : -1.0f;
-    }
-
-    // 2. Nearest point in D8 + 0.5 (Coset 1)
-    float f_shift[8];
-    int sum_shift = 0;
-    float max_err_shift = -1.0f;
-    int worst_shift_dim = 0;
-
-    #pragma unroll
-    for (int i = 0; i < 8; ++i) {
-        float xs = x[i] - 0.5f;
-        f_shift[i] = rintf(xs);
-        sum_shift += static_cast<int>(f_shift[i]);
-        float err = fabsf(xs - f_shift[i]);
-        if (err > max_err_shift) {
-            max_err_shift = err;
-            worst_shift_dim = i;
-        }
-    }
-
-    float coset1[8];
-    #pragma unroll
-    for (int i = 0; i < 8; ++i) {
-        coset1[i] = f_shift[i] + 0.5f;
-    }
-    if ((sum_shift & 1) != 0) {
-        coset1[worst_shift_dim] += ((x[worst_shift_dim] - 0.5f) >= f_shift[worst_shift_dim]) ? 1.0f : -1.0f;
-    }
-
-    // 3. Distance comparison
-    float dist_d8 = 0.0f;
-    float dist_coset1 = 0.0f;
-    #pragma unroll
-    for (int i = 0; i < 8; ++i) {
-        float diff0 = x[i] - d8[i];
-        float diff1 = x[i] - coset1[i];
-        dist_d8 += diff0 * diff0;
-        dist_coset1 += diff1 * diff1;
-    }
-
-    #pragma unroll
-    for (int i = 0; i < 8; ++i) {
-        out[i] = (dist_d8 <= dist_coset1) ? d8[i] : coset1[i];
-    }
+// rk4v4-e8 codec contract: the group scale is amax/14, the projection domain is
+// k/(amax/7) = k * (0.5 / (amax/14)) so |x| <= 7 per coordinate. The nearest E8
+// point p is therefore an integer or half-integer with |p| <= 7.5, and the
+// doubled code c = 2*p is an exact integer in [-15, 15] (4-bit code + coset bit;
+// the coset is carried by code parity). Storing c per dimension as int8 with the
+// group scale amax/14 makes the generic int8 dequant exact:
+//   c * (amax/14) == 2*p * (amax/14) == p * (amax/7).
+__device__ __forceinline__ std::int8_t e8_doubled_code(float p) {
+    int c = static_cast<int>(rintf(p * 2.0f));
+    c     = max(-15, min(15, c)); // defensive; in range for |p| <= 7.5
+    return static_cast<std::int8_t>(c);
 }
 
 // Warp-Cooperative 8D E8 Projection across 8 lanes in a 32-thread warp

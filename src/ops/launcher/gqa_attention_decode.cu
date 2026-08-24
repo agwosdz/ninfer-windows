@@ -267,7 +267,7 @@ void gqa_attention_small_t_launch_for(const Tensor& q, CacheInput input, const T
                         q, input, pos, scale, cache, invocation, logical_capacity,                 \
                         implementation_window, splits, partial_acc, partial_m, partial_l, stream); \
                 } else if (cache.e8_lattice) {                                                     \
-                    launch_tc_partial_i8<Geometry, (TOKENS), true, true, true, true, true, false,  \
+                    launch_tc_partial_i8<Geometry, (TOKENS), true, true, true, false, true, false, \
                                          MultiBatch, Masked>(                                      \
                         q, input, pos, scale, cache, invocation, logical_capacity,                 \
                         implementation_window, splits, partial_acc, partial_m, partial_l, stream); \

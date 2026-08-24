@@ -88,7 +88,9 @@ void gqa_kv_append_launch_for(const Tensor& k, const Tensor& v, const Tensor& po
         if (tokens >= 32) {
             constexpr int kPageBlock     = 256;
             constexpr int kTokensPerTile = 8;
-            const int max_tiles          = static_cast<int>(div_up(tokens + kTokensPerTile, kTokensPerTile));
+            // Tightest bound: tiles are aligned to eight-token boundaries and an unknown
+            // base offset shifts the first tile by at most one tile of leading slack.
+            const int max_tiles          = static_cast<int>(div_up(tokens + kTokensPerTile - 1, kTokensPerTile));
             const dim3 fill_grid(static_cast<unsigned>(max_tiles),
                                  static_cast<unsigned>(Geometry::KVHeads),
                                  static_cast<unsigned>(kGqaKvQuantGroups));
@@ -121,7 +123,7 @@ void gqa_kv_append_launch_for(const Tensor& k, const Tensor& v, const Tensor& po
         if (cache.e8_root) {
             launch_fill.template operator()<true, true, true, false, false, true>();
         } else if (cache.e8_lattice) {
-            launch_fill.template operator()<true, true, true, true, true, false>();
+            launch_fill.template operator()<true, true, true, false, true, false>();
         } else if (cache.packed_k) {
             launch_fill.template operator()<true, true, true, true, false, false>();
         } else if (cache.packed_v) {
