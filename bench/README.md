@@ -44,7 +44,7 @@ ninfer_bench --weights <artifact.ninfer>
           [-pg, --prompt-gen <P,G;P,G...>]
           [-r, --repetitions <n>] [--warmup <n>]
           [--max-ctx <tokens>] [--prefill-chunk <tokens>]
-          [--kv-dtype <bf16|int8>]
+          [--kv-dtype <bf16|int8|rk8v4|rk4v4|rk4v4-e8|rk2v4-e8>]
           [--spec <none|mtp|dflash>] [--draft-tokens <n>] [--lm-head-draft]
           [--device <id>] [--no-cuda-graph] [--profile-measured]
           [-o, --output <table|json|csv>] [--output-file <path>]
@@ -60,7 +60,10 @@ Example:
   -p 512,2048 -n 128 -pg '2048,128' -r 5 --warmup 1
 ```
 
-`bf16` selects BF16 KV storage and `int8` selects INT8 group-64 KV storage. `--spec` selects the
+`bf16` selects BF16 KV storage and `int8` selects INT8 group-64 KV storage. The rotated compressed
+storages `rk8v4`, `rk4v4`, `rk4v4-e8`, and `rk2v4-e8` select the rotated int8-key/int4-value,
+packed int4-key/int4-value, E8-lattice, and E8-root KV codecs; names match the product CLI/serve
+surface, and the Engine rejects a storage a target does not support. `--spec` selects the
 speculative backend and `--draft-tokens` its window: MTP accepts 1..5, DFlash 1..15 with the
 Engine enforcing the target-specific cap (the qwen3.8-27B DFlash2 round rejects windows above 7).
 The same binary measures every registered identity, including the qwen3.8-27b weight profiles,

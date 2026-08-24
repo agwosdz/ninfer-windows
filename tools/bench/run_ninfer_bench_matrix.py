@@ -11,8 +11,14 @@ a fully factorial campaign:
 * Variants: repeatable ``--variant NAME=PATH`` artifacts (for example the
   registered qwen3.8-27b groupwise-int, nvfp4, and groupwise-int-dflash2
   profiles). Every case runs once per selected variant.
-* KV-cache compression: ``--kv-dtype bf16,int8`` selects INT8-G64 or BF16 KV
-  storage for every case.
+* KV-cache compression: ``--kv-dtype`` sweeps the registered storages
+  (bf16, int8, rk8v4, rk4v4, rk4v4-e8, rk2v4-e8) for every case.
+
+Run ``--pick`` for an interactive one-shot campaign: it lists discovered
+.ninfer artifacts (repo root, out/, plus repeatable ``--artifact-dir``
+directories), speculative draft modes, KV compressions, and benchmark suites,
+then executes the full cross product of the selections through the normal
+matrix path.
 
 Raw ninfer_bench reports stay under profiles/bench. This script writes a
 descriptive manifest, exact commands, per-case logs, raw JSON reports, and a flat
@@ -26,6 +32,7 @@ import csv
 import dataclasses
 import datetime as dt
 import json
+import re
 import shlex
 import subprocess
 import sys
@@ -57,7 +64,19 @@ DRAFT_MODES: dict[str, tuple[str, int]] = {
 }
 PRIMARY_DRAFTS = ("mtp0", "mtp3", "dflash7")
 MTP_SWEEP_DRAFTS = ("mtp0", "mtp1", "mtp2", "mtp3", "mtp4", "mtp5")
-KV_DTYPES = ("bf16", "int8")
+
+# KV storages use the product CLI/serve spellings (apps/cli/options.cpp). The
+# rk* entries are the rotated compressed-KV line: rotated int8 keys with int4
+# values, packed int4 keys+values, and their E8-lattice / E8-root variants.
+KV_DTYPES = ("bf16", "int8", "rk8v4", "rk4v4", "rk4v4-e8", "rk2v4-e8")
+KV_DESCRIPTIONS = {
+    "bf16": "BF16 KV storage (baseline)",
+    "int8": "INT8 group-64",
+    "rk8v4": "rotated INT8 keys + INT4 values group-64",
+    "rk4v4": "rotated packed INT4 keys + INT4 values group-64",
+    "rk4v4-e8": "INT4 K/V with E8-lattice codes",
+    "rk2v4-e8": "INT4 K/V with E8-root codes",
+}
 
 # Near-capacity stress prompts are pinned corpus offsets per speculative mode so
 # repeated campaigns measure identical request shapes.
@@ -362,6 +381,225 @@ def parse_drafts(text: str | None) -> tuple[str, ...]:
             raise SystemExit(f"unknown draft mode {piece!r}; expected {allowed}")
         seen[mode] = None
     return tuple(seen)
+
+
+# --- interactive picker (--pick) --------------------------------------------
+
+
+def split_pick_args(argv: Sequence[str]) -> tuple[list[Path], list[str]]:
+    """Extract wizard-only flags; everything else passes through to main()."""
+    dirs: list[Path] = []
+    rest: list[str] = []
+    index = 0
+    while index < len(argv):
+        if argv[index] == "--artifact-dir":
+            if index + 1 >= len(argv):
+                raise SystemExit("--artifact-dir needs a path")
+            dirs.append(Path(argv[index + 1]).expanduser().resolve())
+            index += 2
+        else:
+            rest.append(argv[index])
+            index += 1
+    return dirs, rest
+
+
+def describe_artifact(path: Path) -> dict[str, Any]:
+    resolved = path.resolve()
+    try:
+        size_gib = resolved.stat().st_size / (1024**3)
+    except OSError:
+        size_gib = 0.0
+    model_id = ""
+    weights_id = ""
+    conversion_path = Path(str(resolved) + ".conversion.json")
+    try:
+        report = json.loads(conversion_path.read_text(encoding="utf-8"))
+        identity = report.get("identity", {})
+        model_id = str(identity.get("model_id", ""))
+        weights_id = str(identity.get("weights_id", ""))
+    except (OSError, json.JSONDecodeError):
+        pass
+    identity_text = f"{model_id or '?'}/{weights_id or '?'}"
+    return {
+        "path": resolved,
+        "name": resolved.name,
+        "model_id": model_id,
+        "weights_id": weights_id,
+        "label": f"{resolved.name}  [{identity_text}]  {size_gib:.1f} GiB",
+    }
+
+
+def discover_artifacts(extra_dirs: Sequence[Path] = ()) -> list[dict[str, Any]]:
+    roots = [REPO_ROOT, REPO_ROOT / "out", *extra_dirs]
+    seen: dict[str, dict[str, Any]] = {}
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for path in sorted(root.glob("*.ninfer")):
+            if path.is_file():
+                described = describe_artifact(path)
+                seen.setdefault(str(described["path"]), described)
+    return [seen[key] for key in sorted(seen)]
+
+
+def sanitize_variant_name(name: str) -> str:
+    cleaned = re.sub(r"[^0-9A-Za-z_.-]+", "_", name.strip().lower()).strip("_")
+    return cleaned or "artifact"
+
+
+def assign_variant_names(entries: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    used: set[str] = set()
+    named = []
+    for entry in entries:
+        base = sanitize_variant_name(Path(entry["name"]).stem)
+        name = base
+        suffix = 2
+        while name in used:
+            name = f"{base}_{suffix}"
+            suffix += 1
+        used.add(name)
+        named.append({**entry, "variant": name})
+    return named
+
+
+def parse_index_selection(text: str, size: int, *, default: Sequence[int] | None = None) -> list[int]:
+    text = text.strip()
+    if not text:
+        if default is None:
+            raise SystemExit("a selection is required")
+        return sorted(set(default))
+    if text.lower() in {"a", "all"}:
+        return list(range(size))
+    picked: set[int] = set()
+    for token in text.replace(",", " ").split():
+        match = re.fullmatch(r"(\d+)(?:-(\d+))?", token)
+        if not match:
+            raise SystemExit(f"invalid selection token {token!r}")
+        start = int(match.group(1))
+        end = int(match.group(2)) if match.group(2) else start
+        if start < 1 or end < start or end > size:
+            raise SystemExit(f"selection {token!r} outside 1..{size}")
+        picked.update(range(start - 1, end))
+    return sorted(picked)
+
+
+def _prompt_selection(title: str, labels: Sequence[str], *, default: Sequence[int]) -> list[int]:
+    print(title)
+    for number, label in enumerate(labels, start=1):
+        print(f"  [{number}] {label}")
+    hint = f"comma/range/a=all/Enter=default({len(default)}) "
+    while True:
+        try:
+            raw = input(hint + ": ")
+        except EOFError:
+            raise SystemExit("--pick needs interactive input; use explicit flags instead") from None
+        try:
+            return parse_index_selection(raw, len(labels), default=default)
+        except SystemExit as error:
+            print(f"  {error}")
+
+
+def assemble_pick_argv(
+    preset: str,
+    suites: Sequence[str],
+    drafts: Sequence[str],
+    kv_dtypes: Sequence[str],
+    variants: Sequence[dict[str, Any]],
+) -> list[str]:
+    argv = ["--preset", preset]
+    for suite in suites:
+        argv += ["--suite", suite]
+    argv += ["--drafts", ",".join(drafts), "--kv-dtype", ",".join(kv_dtypes)]
+    for variant in variants:
+        argv += ["--variant", f"{variant['variant']}={variant['path']}"]
+    return argv
+
+
+def plan_with_picker(extra_dirs: Sequence[Path] = ()) -> list[str]:
+    entries = assign_variant_names(discover_artifacts(extra_dirs))
+    if not entries:
+        raise SystemExit(
+            "no .ninfer artifacts found in repo root, out/, or --artifact-dir directories"
+        )
+
+    print(f"Found {len(entries)} artifact(s):")
+    picked = _prompt_selection(
+        "\nArtifacts to benchmark:",
+        [entry["label"] for entry in entries],
+        default=range(len(entries)),
+    )
+    variants = [entries[index] for index in picked]
+
+    draft_labels = [
+        f"{mode:<9} {draft_spec(mode)[1]} - "
+        + ("no speculation (baseline)" if draft_spec(mode)[0] == "none" else
+           "DFlash block=8 round (needs the groupwise-int-dflash2 profile)"
+           if draft_spec(mode)[0] == "dflash" else
+           f"MTP draft window {draft_spec(mode)[1]}")
+        for mode in DRAFT_MODES
+    ]
+    draft_default = [list(DRAFT_MODES).index(mode) for mode in PRIMARY_DRAFTS]
+    draft_picked = _prompt_selection("\nSpeculative draft modes:", draft_labels, default=draft_default)
+    drafts = tuple(list(DRAFT_MODES)[index] for index in draft_picked)
+
+    kv_picked = _prompt_selection(
+        "\nKV-cache compression:",
+        [f"{dtype:<10} {KV_DESCRIPTIONS[dtype]}" for dtype in KV_DTYPES],
+        default=range(len(KV_DTYPES)),
+    )
+    kv_selected = tuple(KV_DTYPES[index] for index in kv_picked)
+
+    preset_picked = _prompt_selection(
+        "\nBenchmark preset:",
+        [
+            "smoke   - three quick shapes, sanity check",
+            "core    - published-length curves (default)",
+            "full    - core plus 32k/64k context lengths",
+        ],
+        default=[1],
+    )[0]
+    presets = ("smoke", "core", "full")
+    preset = presets[preset_picked]
+
+    all_cases = build_cases(preset, drafts)
+    suite_counts: dict[str, int] = {}
+    for case in all_cases:
+        suite_counts[case.suite] = suite_counts.get(case.suite, 0) + 1
+    suites = tuple(suite_counts)
+    suite_picked = _prompt_selection(
+        "\nSuites to run:", [f"{s:<15} {suite_counts[s]} shape(s)" for s in suites],
+        default=range(len(suites)),
+    )
+    selected_suites = tuple(suites[index] for index in suite_picked)
+
+    selected_cases = filtered_cases(all_cases, list(selected_suites), None)
+    points = len(selected_cases) * len(kv_selected) * len(variants)
+
+    if any(draft_spec(mode)[0] == "dflash" for mode in drafts):
+        if not any("dflash" in entry["weights_id"] for entry in variants):
+            print(
+                "\nwarning: dflash modes were selected but no selected artifact carries a "
+                "dflash weights profile; those combinations will fail at Engine startup and be "
+                "recorded in failures.json"
+            )
+
+    print("\nCampaign plan:")
+    print(f"  artifacts : {', '.join(entry['name'] for entry in variants)}")
+    print(f"  drafts    : {', '.join(drafts)}")
+    print(f"  kv        : {', '.join(kv_selected)}")
+    print(f"  preset    : {preset}")
+    print(f"  suites    : {', '.join(selected_suites)}")
+    print(f"  points    : {points} ({len(selected_cases)} shapes x {len(kv_selected)} kv x "
+          f"{len(variants)} variants)")
+
+    try:
+        confirm = input("\nStart the campaign? [Y/n]: ").strip().lower()
+    except EOFError:
+        raise SystemExit("--pick needs interactive input; use explicit flags instead") from None
+    if confirm not in {"", "y", "yes"}:
+        raise SystemExit("campaign cancelled")
+
+    return assemble_pick_argv(preset, selected_suites, drafts, kv_selected, variants)
 
 
 def load_bench_report(report_path: Path) -> dict[str, Any]:
@@ -772,5 +1010,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
+def run_cli(argv: Sequence[str] | None = None) -> int:
+    raw = list(sys.argv[1:] if argv is None else argv)
+    if "--pick" in raw:
+        raw = [item for item in raw if item != "--pick"]
+        artifact_dirs, rest = split_pick_args(raw)
+        return main([*plan_with_picker(artifact_dirs), *rest])
+    return main(raw)
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(run_cli())

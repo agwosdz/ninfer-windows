@@ -4,16 +4,24 @@ import json
 
 from tools.bench.run_ninfer_bench_matrix import (
     DRAFT_MODES,
+    KV_DTYPES,
     REPORT_SCHEMA_VERSION,
     BenchCase,
+    assemble_pick_argv,
+    assign_variant_names,
     build_cases,
+    describe_artifact,
+    discover_artifacts,
     draft_args,
     draft_tag,
     filtered_cases,
     parse_drafts,
+    parse_index_selection,
     parse_kv_dtypes,
     parse_variants,
     report_rows,
+    sanitize_variant_name,
+    split_pick_args,
 )
 
 
@@ -210,3 +218,78 @@ def test_filtered_cases_keeps_suite_selection_order() -> None:
     ]
     limited = filtered_cases(cases, ("pure_decode",), 5)
     assert [case.name for case in limited] == ["tg8_k3_graph"]
+
+
+def test_kv_dtype_axis_covers_every_registered_storage() -> None:
+    assert KV_DTYPES == ("bf16", "int8", "rk8v4", "rk4v4", "rk4v4-e8", "rk2v4-e8")
+    assert parse_kv_dtypes(",".join(KV_DTYPES)) == KV_DTYPES
+
+
+def test_parse_index_selection_supports_ranges_defaults_and_all() -> None:
+    assert parse_index_selection("", 4, default=[0, 2]) == [0, 2]
+    assert parse_index_selection("all", 3) == [0, 1, 2]
+    assert parse_index_selection("a", 3) == [0, 1, 2]
+    assert parse_index_selection("2-4", 5) == [1, 2, 3]
+    assert parse_index_selection("1, 3-4,1", 5) == [0, 2, 3]
+
+    try:
+        parse_index_selection("x", 3)
+    except SystemExit as exc:
+        assert "invalid selection token" in str(exc)
+    else:
+        raise AssertionError("garbage token accepted")
+
+    try:
+        parse_index_selection("9", 3)
+    except SystemExit as exc:
+        assert "outside 1..3" in str(exc)
+    else:
+        raise AssertionError("out-of-range token accepted")
+
+
+def test_artifact_discovery_labels_identity_from_conversion_report(tmp_path) -> None:
+    labeled = tmp_path / "qwen3_8_27b.ninfer"
+    labeled.write_bytes(b"artifact")
+    (tmp_path / "qwen3_8_27b.ninfer.conversion.json").write_text(
+        json.dumps({"identity": {"model_id": "qwen3.8-27b", "weights_id": "groupwise-int"}}),
+        encoding="utf-8",
+    )
+    plain = tmp_path / "plain.ninfer"
+    plain.write_bytes(b"artifact")
+
+    entries = discover_artifacts([tmp_path])
+    by_name = {entry["name"]: entry for entry in entries}
+    assert set(by_name) >= {"qwen3_8_27b.ninfer", "plain.ninfer"}
+    assert by_name["qwen3_8_27b.ninfer"]["weights_id"] == "groupwise-int"
+    assert "groupwise-int" in by_name["qwen3_8_27b.ninfer"]["label"]
+    assert by_name["plain.ninfer"]["model_id"] == ""
+
+    named = assign_variant_names(
+        [by_name["qwen3_8_27b.ninfer"], by_name["plain.ninfer"], by_name["plain.ninfer"]]
+    )
+    assert [entry["variant"] for entry in named] == ["qwen3_8_27b", "plain", "plain_2"]
+    assert sanitize_variant_name("Qwen3.8 (27B) dflash2!") == "qwen3.8_27b_dflash2"
+
+
+def test_split_pick_args_extracts_wizard_only_flags() -> None:
+    dirs, rest = split_pick_args(
+        ["--dry-run", "--artifact-dir", "C:/a", "--no-build", "--artifact-dir", "C:/b"]
+    )
+    assert len(dirs) == 2 and rest == ["--dry-run", "--no-build"]
+
+
+def test_assemble_pick_argv_builds_full_cross_product_arguments() -> None:
+    variants = [{"variant": "gi", "path": "out/gi.ninfer"}, {"variant": "fp4", "path": "out/fp4.ninfer"}]
+    argv = assemble_pick_argv(
+        "core",
+        ("pure_decode", "context_decode"),
+        ("mtp0", "dflash7"),
+        ("bf16", "rk4v4-e8"),
+        variants,
+    )
+    assert argv[:2] == ["--preset", "core"]
+    assert argv.count("--suite") == 2
+    assert "--drafts" in argv and argv[argv.index("--drafts") + 1] == "mtp0,dflash7"
+    assert argv[argv.index("--kv-dtype") + 1] == "bf16,rk4v4-e8"
+    assert argv.count("--variant") == 2
+    assert f"gi={variants[0]['path']}" in argv

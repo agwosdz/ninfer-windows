@@ -49,9 +49,15 @@ std::uint32_t parse_u32(std::string_view text, const char* label, bool allow_zer
 }
 
 KvCacheStorage parse_kv_cache(std::string_view text) {
+    // Names match the product CLI/serve surface (apps/cli/options.cpp).
     if (text == "bf16") { return KvCacheStorage::BFloat16; }
     if (text == "int8") { return KvCacheStorage::Int8Group64; }
-    throw std::invalid_argument("--kv-dtype must be bf16 or int8");
+    if (text == "rk8v4") { return KvCacheStorage::RotatedInt8KeyInt4ValueGroup64; }
+    if (text == "rk4v4") { return KvCacheStorage::RotatedInt4KeyInt4ValueGroup64; }
+    if (text == "rk4v4-e8") { return KvCacheStorage::RK4V4E8; }
+    if (text == "rk2v4-e8") { return KvCacheStorage::RK2V4E8; }
+    throw std::invalid_argument(
+        "--kv-dtype must be bf16, int8, rk8v4, rk4v4, rk4v4-e8, or rk2v4-e8");
 }
 
 SpeculativeBackend parse_spec_backend(std::string_view text) {
@@ -277,7 +283,8 @@ std::string usage_text(std::string_view program) {
         << "  --max-ctx <tokens>          override auto-sized context capacity\n"
         << "  --prefill-chunk <tokens>    multiple of " << kPrefillChunkAlignment
         << " (default: " << kDefaultPrefillChunk << ")\n"
-        << "  --kv-dtype <bf16|int8>      KV cache storage (default: bf16)\n"
+        << "  --kv-dtype <bf16|int8|rk8v4|rk4v4|rk4v4-e8|rk2v4-e8>\n"
+        << "                              KV cache storage (default: bf16)\n"
         << "  --spec <none|mtp|dflash>    speculative backend (default: none)\n"
         << "  --draft-tokens <n>          draft window; mtp 1.."
         << kMaxMtpDraftTokens << ", dflash 1.." << kMaxDFlashDraftTokens
@@ -862,6 +869,14 @@ std::string kv_cache_name(KvCacheStorage storage) {
         return "bf16";
     case KvCacheStorage::Int8Group64:
         return "int8-group64";
+    case KvCacheStorage::RotatedInt8KeyInt4ValueGroup64:
+        return "rk8v4";
+    case KvCacheStorage::RotatedInt4KeyInt4ValueGroup64:
+        return "rk4v4";
+    case KvCacheStorage::RK4V4E8:
+        return "rk4v4-e8";
+    case KvCacheStorage::RK2V4E8:
+        return "rk2v4-e8";
     }
     return "unknown";
 }
