@@ -42,3 +42,22 @@ set_target_properties(ninfer_kv_e8_lattice_oracle PROPERTIES
   CUDA_STANDARD_REQUIRED ON)
 target_include_directories(ninfer_kv_e8_lattice_oracle PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../src)
 add_test(NAME ninfer_kv_e8_lattice_oracle COMMAND ninfer_kv_e8_lattice_oracle)
+
+# On-device round-trip check of the rk* rotate primitive on the current arch.
+add_executable(ninfer_kv_rotate_roundtrip
+  test_rotate_roundtrip.cu)
+set_target_properties(ninfer_kv_rotate_roundtrip PROPERTIES
+  CUDA_STANDARD 17
+  CUDA_STANDARD_REQUIRED ON)
+target_include_directories(ninfer_kv_rotate_roundtrip PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../src)
+add_test(NAME ninfer_kv_rotate_roundtrip COMMAND ninfer_kv_rotate_roundtrip)
+
+# shfl_xor_sync primitive semantics probe (diagnostic; not a ctest).
+add_executable(ninfer_kv_shfl_probe test_shfl_probe.cu)
+set_target_properties(ninfer_kv_shfl_probe PROPERTIES
+  CUDA_STANDARD 17 CUDA_STANDARD_REQUIRED ON)
+
+# hadamard64 per-stage dump (diagnostic; not a ctest).
+add_executable(ninfer_kv_hadamard_dump test_hadamard_dump.cu)
+set_target_properties(ninfer_kv_hadamard_dump PROPERTIES
+  CUDA_STANDARD 17 CUDA_STANDARD_REQUIRED ON)
