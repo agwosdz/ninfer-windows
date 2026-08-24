@@ -1,7 +1,8 @@
-// ninfer::ops - INT8 prompt/prefill route. Split from the unified dispatcher so
-// this kernel family compiles in its own translation unit. Plain, packed-V and
-// packed-K cache layouts instantiate here; the E8 lattice/root codec variants
-// live in gqa_attention_prefill_e8.cu.
+// ninfer::ops - E8 lattice/root compressed-KV prompt/prefill route. Split from
+// the plain INT8 route so the codec kernels compile in their own translation
+// unit. Root views attend through the root-specialized kernel; lattice views
+// attend through the packed-K route (no lattice attention specialization) and
+// both codecs carry their specialized append kernels.
 #include "ops/launcher/gqa_attention.h"
 
 #include "ops/common/math.h"
@@ -12,14 +13,13 @@
 
 namespace ninfer::ops::detail {
 
-template <typename Geometry, bool PackedV, bool RotateK, bool RotateV, bool PackedK,
-          typename CacheView, typename Metadata>
-void gqa_prefill_attention_i8_variant(const Tensor& q, const Tensor& positions, float scale,
-                                      const CacheView& cache, Metadata metadata, Tensor& out,
-                                      cudaStream_t stream) {
+template <typename Geometry, typename CacheView, typename Metadata>
+void gqa_prefill_attention_e8(const Tensor& q, const Tensor& positions, float scale,
+                              const CacheView& cache, Metadata metadata, Tensor& out,
+                              cudaStream_t stream) {
     static const cudaError_t attr_i8 = cudaFuncSetAttribute(
-        gqa_attention_prefill_i8_kernel<Geometry, PackedV, RotateK, RotateV, PackedK,
-                                        /*E8Root=*/false, Metadata>,
+        gqa_attention_prefill_i8_kernel<Geometry, true, true, true, false,
+                                        /*E8Root=*/true, Metadata>,
         cudaFuncAttributeMaxDynamicSharedMemorySize, kGqaPrefillI8SmemBytes);
     CUDA_CHECK(attr_i8);
 
@@ -30,8 +30,8 @@ void gqa_prefill_attention_i8_variant(const Tensor& q, const Tensor& positions, 
     const Tensor& cache_v       = cache.v_pages;
     const Tensor& cache_k_scale = cache.k_scale_pages;
     const Tensor& cache_v_scale = cache.v_scale_pages;
-    gqa_attention_prefill_i8_kernel<Geometry, PackedV, RotateK, RotateV, PackedK,
-                                    /*E8Root=*/false, Metadata>
+    gqa_attention_prefill_i8_kernel<Geometry, true, true, true, false,
+                                    /*E8Root=*/true, Metadata>
         <<<attention_grid, kGqaPrefillI8Threads, kGqaPrefillI8SmemBytes, stream>>>(
             static_cast<const __nv_bfloat16*>(q.data),
             static_cast<const std::int8_t*>(cache_k.data),
@@ -43,29 +43,10 @@ void gqa_prefill_attention_i8_variant(const Tensor& q, const Tensor& positions, 
     CUDA_CHECK(cudaGetLastError());
 }
 
-template <typename Geometry, typename CacheView, typename Metadata>
-void gqa_prefill_attention_i8(const Tensor& q, const Tensor& positions, float scale,
-                              const CacheView& cache, Metadata metadata, Tensor& out,
-                              cudaStream_t stream) {
-    if (cache.packed_k) {
-        gqa_prefill_attention_i8_variant<Geometry, true, true, true, true>(q, positions, scale,
-                                                                           cache, metadata, out,
-                                                                           stream);
-    } else if (cache.packed_v) {
-        gqa_prefill_attention_i8_variant<Geometry, true, true, true, false>(q, positions, scale,
-                                                                            cache, metadata, out,
-                                                                            stream);
-    } else {
-        gqa_prefill_attention_i8_variant<Geometry, false, false, false, false>(q, positions, scale,
-                                                                               cache, metadata,
-                                                                               out, stream);
-    }
-}
-
 template <typename Geometry, bool PackedV, bool RotateK, bool RotateV, bool PackedK,
-          typename CacheView, typename Metadata>
-void gqa_prefill_append_i8_variant(const Tensor& k, const Tensor& v, const Tensor& positions,
-                                   CacheView cache, Metadata metadata, cudaStream_t stream) {
+          bool E8Lattice, bool E8Root, typename CacheView, typename Metadata>
+void gqa_prefill_append_e8_codec(const Tensor& k, const Tensor& v, const Tensor& positions,
+                                 CacheView cache, Metadata metadata, cudaStream_t stream) {
     const auto tokens = static_cast<std::int32_t>(k.ne[2]);
     Tensor& cache_k       = cache.k_pages;
     Tensor& cache_v       = cache.v_pages;
@@ -80,7 +61,7 @@ void gqa_prefill_append_i8_variant(const Tensor& k, const Tensor& v, const Tenso
                              static_cast<unsigned>(Geometry::KVHeads),
                              static_cast<unsigned>(kGqaKvQuantGroups));
         gqa_attention_prefill_fill_i8_page_kernel<Geometry, PackedV, RotateK, RotateV, PackedK,
-                                                  /*E8Lattice=*/false, /*E8Root=*/false, Metadata>
+                                                  E8Lattice, E8Root, Metadata>
             <<<fill_grid, kPageBlock, 0, stream>>>(
                 static_cast<const __nv_bfloat16*>(k.data),
                 static_cast<const __nv_bfloat16*>(v.data),
@@ -96,7 +77,7 @@ void gqa_prefill_append_i8_variant(const Tensor& k, const Tensor& v, const Tenso
         const int fill_grid =
             static_cast<int>(div_up(fill_units, static_cast<std::int64_t>(kFillWarps)));
         gqa_attention_prefill_fill_i8_kernel<Geometry, PackedV, RotateK, RotateV, PackedK,
-                                             /*E8Lattice=*/false, /*E8Root=*/false, Metadata>
+                                             E8Lattice, E8Root, Metadata>
             <<<fill_grid, 256, 0, stream>>>(
                 static_cast<const __nv_bfloat16*>(k.data),
                 static_cast<const __nv_bfloat16*>(v.data),
@@ -110,35 +91,32 @@ void gqa_prefill_append_i8_variant(const Tensor& k, const Tensor& v, const Tenso
 }
 
 template <typename Geometry, typename CacheView, typename Metadata>
-void gqa_prefill_append_i8(const Tensor& k, const Tensor& v, const Tensor& positions,
+void gqa_prefill_append_e8(const Tensor& k, const Tensor& v, const Tensor& positions,
                            CacheView cache, Metadata metadata, cudaStream_t stream) {
-    if (cache.packed_k) {
-        gqa_prefill_append_i8_variant<Geometry, true, true, true, true>(k, v, positions, cache,
-                                                                        metadata, stream);
-    } else if (cache.packed_v) {
-        gqa_prefill_append_i8_variant<Geometry, true, true, true, false>(k, v, positions, cache,
-                                                                         metadata, stream);
+    if (cache.e8_root) {
+        gqa_prefill_append_e8_codec<Geometry, true, true, true, false, /*E8Lattice=*/false,
+                                    /*E8Root=*/true>(k, v, positions, cache, metadata, stream);
     } else {
-        gqa_prefill_append_i8_variant<Geometry, false, false, false, false>(k, v, positions, cache,
-                                                                            metadata, stream);
+        gqa_prefill_append_e8_codec<Geometry, true, true, true, true, /*E8Lattice=*/true,
+                                    /*E8Root=*/false>(k, v, positions, cache, metadata, stream);
     }
 }
 
-#define NINFER_GQA_PREFILL_I8_INSTANTIATE(GEOMETRY, CACHE_VIEW, METADATA)                           \
-    template void gqa_prefill_attention_i8<GEOMETRY, CACHE_VIEW, METADATA>(                         \
+#define NINFER_GQA_PREFILL_E8_INSTANTIATE(GEOMETRY, CACHE_VIEW, METADATA)                           \
+    template void gqa_prefill_attention_e8<GEOMETRY, CACHE_VIEW, METADATA>(                         \
         const Tensor&, const Tensor&, float, const CACHE_VIEW&, METADATA, Tensor&, cudaStream_t);   \
-    template void gqa_prefill_append_i8<GEOMETRY, CACHE_VIEW, METADATA>(                           \
+    template void gqa_prefill_append_e8<GEOMETRY, CACHE_VIEW, METADATA>(                           \
         const Tensor&, const Tensor&, const Tensor&, CACHE_VIEW, METADATA, cudaStream_t);
 
-NINFER_GQA_PREFILL_I8_INSTANTIATE(Gqa27Geometry, PagedKVLayerView, GqaPrefillDirectMetadata)
-NINFER_GQA_PREFILL_I8_INSTANTIATE(Gqa35Geometry, PagedKVLayerView, GqaPrefillDirectMetadata)
-NINFER_GQA_PREFILL_I8_INSTANTIATE(Gqa27Geometry, PagedKVBatchLayerView,
+NINFER_GQA_PREFILL_E8_INSTANTIATE(Gqa27Geometry, PagedKVLayerView, GqaPrefillDirectMetadata)
+NINFER_GQA_PREFILL_E8_INSTANTIATE(Gqa35Geometry, PagedKVLayerView, GqaPrefillDirectMetadata)
+NINFER_GQA_PREFILL_E8_INSTANTIATE(Gqa27Geometry, PagedKVBatchLayerView,
                                   GqaPrefillBatchMetadata<false>)
-NINFER_GQA_PREFILL_I8_INSTANTIATE(Gqa27Geometry, PagedKVBatchLayerView, GqaPrefillBatchMetadata<true>)
-NINFER_GQA_PREFILL_I8_INSTANTIATE(Gqa35Geometry, PagedKVBatchLayerView,
+NINFER_GQA_PREFILL_E8_INSTANTIATE(Gqa27Geometry, PagedKVBatchLayerView, GqaPrefillBatchMetadata<true>)
+NINFER_GQA_PREFILL_E8_INSTANTIATE(Gqa35Geometry, PagedKVBatchLayerView,
                                   GqaPrefillBatchMetadata<false>)
-NINFER_GQA_PREFILL_I8_INSTANTIATE(Gqa35Geometry, PagedKVBatchLayerView,
+NINFER_GQA_PREFILL_E8_INSTANTIATE(Gqa35Geometry, PagedKVBatchLayerView,
                                   GqaPrefillBatchMetadata<true>)
-#undef NINFER_GQA_PREFILL_I8_INSTANTIATE
+#undef NINFER_GQA_PREFILL_E8_INSTANTIATE
 
 } // namespace ninfer::ops::detail

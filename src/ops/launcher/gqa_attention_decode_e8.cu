@@ -1,7 +1,7 @@
-// ninfer::ops - INT8 small-T partial-kernel route. Split from the unified
-// dispatcher so this kernel family compiles in its own translation unit.
-// Plain, packed-V and packed-K cache layouts instantiate here; the E8
-// lattice/root codec variants live in gqa_attention_decode_e8.cu.
+// ninfer::ops - E8 lattice/root compressed-KV small-T partial-kernel route.
+// Split from the plain INT8 route so the fat codec kernels compile in their own
+// translation unit. Both variants keep the packed-V/rotated-K producer layout;
+// the lattice additionally packs K.
 #include "ops/launcher/gqa_attention.h"
 
 #include "ops/kernel/gqa_attention_decode_i8.cuh"
@@ -13,9 +13,9 @@
 namespace ninfer::ops::detail {
 namespace {
 
-template <typename Geometry, int TokenTile, bool PackedV, bool RotateK, bool RotateV,
-          bool PackedK, bool MultiBatch, bool Masked, typename CacheInput>
-void launch_tc_partial_i8(const Tensor& q, CacheInput input, const Tensor& pos, float scale,
+template <typename Geometry, int TokenTile, bool E8Lattice, bool E8Root, bool MultiBatch,
+          bool Masked, typename CacheInput>
+void launch_tc_partial_e8(const Tensor& q, CacheInput input, const Tensor& pos, float scale,
                           PagedKVBatchLayerView cache, const GqaSmallTInvocation& invocation,
                           std::int32_t logical_capacity, std::int32_t implementation_window,
                           std::int32_t splits, Tensor& partial_acc, Tensor& partial_m,
@@ -32,18 +32,18 @@ void launch_tc_partial_i8(const Tensor& q, CacheInput input, const Tensor& pos, 
             static const cudaError_t attr = cudaFuncSetAttribute(
                 gqa_attention_decode_i8_tiled_kernel<Geometry, TokenTile, WarpsPerCta,
                                                      MinBlocksPerSm, KeyBlock, DynamicArena,
-                                                     PackedV, RotateK, RotateV, PackedK,
-                                                     false, false, MultiBatch, Masked, CacheInput>,
+                                                     true, true, true, E8Lattice, E8Lattice,
+                                                     E8Root, MultiBatch, Masked, CacheInput>,
                 cudaFuncAttributeMaxDynamicSharedMemorySize, static_cast<int>(kDynamicBytes));
             CUDA_CHECK(attr);
         }
         gqa_attention_decode_i8_tiled_kernel<Geometry, TokenTile, WarpsPerCta, MinBlocksPerSm,
-                                             KeyBlock, DynamicArena, PackedV, RotateK, RotateV,
-                                             PackedK, false, false, MultiBatch, Masked, CacheInput>
+                                             KeyBlock, DynamicArena, true, true, true, E8Lattice,
+                                             E8Lattice, E8Root, MultiBatch, Masked, CacheInput>
             <<<grid, WarpsPerCta * 32, kDynamicBytes, stream>>>(
                 static_cast<const __nv_bfloat16*>(q.data), input,
                 static_cast<const std::int32_t*>(pos.data), static_cast<std::int8_t*>(cache_k.data),
-                static_cast<std::int8_t*>(cache_v.data), static_cast<__half*>(cache_k_scale.data),
+                static_cast<std::uint8_t*>(cache_v.data), static_cast<__half*>(cache_k_scale.data),
                 static_cast<__half*>(cache_v_scale.data),
                 static_cast<const std::int32_t*>(cache.block_tables.data),
                 invocation.valid_columns == nullptr
@@ -107,17 +107,16 @@ void launch_tc_partial_i8(const Tensor& q, CacheInput input, const Tensor& pos, 
 } // namespace
 
 template <typename Geometry, typename CacheInput>
-void gqa_small_t_partial_i8(const Tensor& q, CacheInput input, const Tensor& pos, float scale,
+void gqa_small_t_partial_e8(const Tensor& q, CacheInput input, const Tensor& pos, float scale,
                             PagedKVBatchLayerView cache, const GqaSmallTInvocation& invocation,
                             std::int32_t logical_capacity, std::int32_t implementation_window,
                             std::int32_t splits, Tensor& partial_acc, Tensor& partial_m,
                             Tensor& partial_l, cudaStream_t stream) {
-    const auto dispatch_variant = [&]<bool PackedV, bool RotateK, bool RotateV, bool PackedK>() {
-#define NINFER_GQA_SMALL_T_I8_DISPATCH(TOKENS)                                                  \
+    const auto dispatch_codec = [&]<bool E8Lattice, bool E8Root>() {
+#define NINFER_GQA_SMALL_T_E8_DISPATCH(TOKENS)                                                  \
     do {                                                                                        \
         const auto launch_profile = [&]<bool MultiBatch, bool Masked>() {                       \
-            launch_tc_partial_i8<Geometry, (TOKENS), PackedV, RotateK, RotateV, PackedK,        \
-                                 MultiBatch, Masked>(                                           \
+            launch_tc_partial_e8<Geometry, (TOKENS), E8Lattice, E8Root, MultiBatch, Masked>(    \
                 q, input, pos, scale, cache, invocation, logical_capacity, implementation_window,\
                 splits, partial_acc, partial_m, partial_l, stream);                             \
         };                                                                                      \
@@ -137,50 +136,48 @@ void gqa_small_t_partial_i8(const Tensor& q, CacheInput input, const Tensor& pos
 
         switch (invocation.width) {
         case 1:
-            NINFER_GQA_SMALL_T_I8_DISPATCH(1);
+            NINFER_GQA_SMALL_T_E8_DISPATCH(1);
             break;
         case 2:
-            NINFER_GQA_SMALL_T_I8_DISPATCH(2);
+            NINFER_GQA_SMALL_T_E8_DISPATCH(2);
             break;
         case 3:
-            NINFER_GQA_SMALL_T_I8_DISPATCH(3);
+            NINFER_GQA_SMALL_T_E8_DISPATCH(3);
             break;
         case 4:
-            NINFER_GQA_SMALL_T_I8_DISPATCH(4);
+            NINFER_GQA_SMALL_T_E8_DISPATCH(4);
             break;
         case 5:
-            NINFER_GQA_SMALL_T_I8_DISPATCH(5);
+            NINFER_GQA_SMALL_T_E8_DISPATCH(5);
             break;
         case 6:
-            NINFER_GQA_SMALL_T_I8_DISPATCH(6);
+            NINFER_GQA_SMALL_T_E8_DISPATCH(6);
             break;
         default:
             throw std::invalid_argument("gqa_attention_small_t_launch: unsupported T");
         }
-#undef NINFER_GQA_SMALL_T_I8_DISPATCH
+#undef NINFER_GQA_SMALL_T_E8_DISPATCH
     };
-    if (cache.packed_k) {
-        dispatch_variant.template operator()<true, true, true, true>();
-    } else if (cache.packed_v) {
-        dispatch_variant.template operator()<true, true, true, false>();
+    if (cache.e8_root) {
+        dispatch_codec.template operator()<false, true>();
     } else {
-        dispatch_variant.template operator()<false, false, false, false>();
+        dispatch_codec.template operator()<true, false>();
     }
 }
 
-template void gqa_small_t_partial_i8<Gqa27Geometry, GqaAppendInput>(
+template void gqa_small_t_partial_e8<Gqa27Geometry, GqaAppendInput>(
     const Tensor&, GqaAppendInput, const Tensor&, float, PagedKVBatchLayerView,
     const GqaSmallTInvocation&, std::int32_t, std::int32_t, std::int32_t, Tensor&, Tensor&,
     Tensor&, cudaStream_t);
-template void gqa_small_t_partial_i8<Gqa27Geometry, GqaCachedInput>(
+template void gqa_small_t_partial_e8<Gqa27Geometry, GqaCachedInput>(
     const Tensor&, GqaCachedInput, const Tensor&, float, PagedKVBatchLayerView,
     const GqaSmallTInvocation&, std::int32_t, std::int32_t, std::int32_t, Tensor&, Tensor&,
     Tensor&, cudaStream_t);
-template void gqa_small_t_partial_i8<Gqa35Geometry, GqaAppendInput>(
+template void gqa_small_t_partial_e8<Gqa35Geometry, GqaAppendInput>(
     const Tensor&, GqaAppendInput, const Tensor&, float, PagedKVBatchLayerView,
     const GqaSmallTInvocation&, std::int32_t, std::int32_t, std::int32_t, Tensor&, Tensor&,
     Tensor&, cudaStream_t);
-template void gqa_small_t_partial_i8<Gqa35Geometry, GqaCachedInput>(
+template void gqa_small_t_partial_e8<Gqa35Geometry, GqaCachedInput>(
     const Tensor&, GqaCachedInput, const Tensor&, float, PagedKVBatchLayerView,
     const GqaSmallTInvocation&, std::int32_t, std::int32_t, std::int32_t, Tensor&, Tensor&,
     Tensor&, cudaStream_t);

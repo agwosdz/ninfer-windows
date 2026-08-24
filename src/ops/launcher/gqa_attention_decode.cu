@@ -92,6 +92,12 @@ PagedKVBatchLayerView single_row_batch_view(const PagedKVLayerView& cache) {
         .num_kv_heads  = cache.num_kv_heads,
         .dtype         = cache.dtype,
         .quant_group   = cache.quant_group,
+        .packed_v      = cache.packed_v,
+        .rotate_k      = cache.rotate_k,
+        .rotate_v      = cache.rotate_v,
+        .packed_k      = cache.packed_k,
+        .e8_lattice    = cache.e8_lattice,
+        .e8_root       = cache.e8_root,
     };
 }
 
@@ -131,11 +137,18 @@ void gqa_attention_small_t_launch_for(const Tensor& q, CacheInput input, const T
     }
 
     // BF16 keeps its row-tile warp count; INT8 selects its producer/consumer
-    // geometry inside the i8 route.
+    // geometry inside the dtype route, and the E8 lattice/root codec variants
+    // own their route table in gqa_attention_decode_e8.cu.
     if (cache.dtype == DType::I8) {
-        gqa_small_t_partial_i8<Geometry, CacheInput>(
-            q, input, pos, scale, cache, invocation, logical_capacity, implementation_window,
-            splits, partial_acc, partial_m, partial_l, stream);
+        if (cache.e8_root || cache.e8_lattice) {
+            gqa_small_t_partial_e8<Geometry, CacheInput>(
+                q, input, pos, scale, cache, invocation, logical_capacity, implementation_window,
+                splits, partial_acc, partial_m, partial_l, stream);
+        } else {
+            gqa_small_t_partial_i8<Geometry, CacheInput>(
+                q, input, pos, scale, cache, invocation, logical_capacity, implementation_window,
+                splits, partial_acc, partial_m, partial_l, stream);
+        }
     } else {
         gqa_small_t_partial_bf16<Geometry, CacheInput>(q, input, pos, scale, cache, invocation,
                                                        logical_capacity, splits, partial_acc,
