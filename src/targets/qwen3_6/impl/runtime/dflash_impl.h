@@ -2,6 +2,18 @@
 #include "targets/qwen3_6/impl/runtime/schedule.h"
 #include "targets/qwen3_6/impl/runtime/workspace_recipe.h"
 
+// [dflash-debug] Number of one-shot probe rounds (default 8); override with
+// NINFER_DFLASH_DEBUG_ROUNDS for longer acceptance traces.
+inline std::int32_t dflash_debug_rounds() {
+    static const std::int32_t rounds = [] {
+        const char* value = std::getenv("NINFER_DFLASH_DEBUG_ROUNDS");
+        if (value == nullptr) return 8;
+        const int parsed = std::atoi(value);
+        return parsed > 0 ? parsed : 8;
+    }();
+    return rounds;
+}
+
 #include "ninfer/ops/argmax.h"
 #include "ninfer/ops/attn_input_proj.h"
 #include "ninfer/ops/bidirectional_gqa_attention.h"
@@ -778,7 +790,7 @@ void propose_batch_v2_impl(Context& state, qwen3_6::DFlashDecodeState& frame,
         static std::atomic<std::int32_t> debug_rounds_a{0};
         if (std::getenv("NINFER_DFLASH_DEBUG") != nullptr) {
             const std::int32_t round_a = debug_rounds_a.fetch_add(1);
-            if (round_a < 8 && batch_size == 1) {
+            if (round_a < dflash_debug_rounds() && batch_size == 1) {
                 const std::int32_t topk = Config::selector_top_k;
                 std::vector<std::int32_t> h_cand(static_cast<std::size_t>(topk) * columns);
                 CUDA_CHECK(cudaMemcpyAsync(h_cand.data(), candidates.data,
@@ -1064,7 +1076,7 @@ auto dflash_decode_batch_body_v2(DFlashBatchContext& state, std::int32_t batch_s
         static std::atomic<std::int32_t> debug_rounds_b{0};
         if (std::getenv("NINFER_DFLASH_DEBUG") != nullptr) {
             const std::int32_t round_b = debug_rounds_b.fetch_add(1);
-            if (round_b < 8 && batch_size == 1) {
+            if (round_b < dflash_debug_rounds() && batch_size == 1) {
                 CUDA_CHECK(cudaStreamSynchronize(state.execution.device.stream));
                 std::vector<std::int32_t> h_drafts(k), h_target(width), h_misc(5);
                 CUDA_CHECK(cudaMemcpyAsync(h_drafts.data(), drafts.data, h_drafts.size() * 4,
