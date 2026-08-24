@@ -90,7 +90,8 @@ gqa_attention_workspace_capacity_bytes(std::int32_t q_heads, DType cache_dtype,
 void gqa_attention(const Tensor& q, const Tensor& k, const Tensor& v, const Tensor& positions,
                    const Tensor& valid_columns, const Tensor& kv_table_rows, float scale,
                    PagedKVBatchLayerView cache, GqaExecutionEnvelope envelope,
-                   WorkspaceArena& workspace, Tensor& out, cudaStream_t stream);
+                   WorkspaceArena& workspace, Tensor& out, cudaStream_t stream,
+                   const Tensor* gate = nullptr);
 
 /**
  * A2: perform only the cache-write part of A1. k/v are contiguous BF16 `[256,4|2,T]`, positions is
@@ -108,6 +109,7 @@ void gqa_kv_append(const Tensor& k, const Tensor& v, const Tensor& positions,
  */
 void gqa_attention_cached(const Tensor& q, const Tensor& positions, float scale,
                           const PagedKVLayerView& cache, GqaExecutionEnvelope envelope,
-                          WorkspaceArena& workspace, Tensor& out, cudaStream_t stream);
+                          WorkspaceArena& workspace, Tensor& out, cudaStream_t stream,
+                          const Tensor* gate = nullptr);
 
 } // namespace ninfer::ops
