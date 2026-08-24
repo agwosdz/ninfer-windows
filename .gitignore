@@ -57,3 +57,6 @@ dist/*
 
 # Git worktree checkouts (local; per-branch working copies)
 worktrees/
+
+# Local build helper output / scratch
+bin/
