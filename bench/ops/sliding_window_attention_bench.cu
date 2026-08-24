@@ -212,8 +212,8 @@ public:
 
     void launch(cudaStream_t stream) {
         ops::swa(q_tensor_, query_k_tensor_, query_v_tensor_, positions_tensor_, valid_tensor_,
-                 lane_tensor_, kScale, context_view_, envelope_, workspace_, output_tensor_,
-                 stream);
+                 lane_tensor_, kScale, kWindow, context_view_, envelope_, workspace_,
+                 output_tensor_, stream);
     }
 
     [[nodiscard]] std::size_t workspace_bytes() const noexcept { return workspace_bytes_; }
