@@ -127,7 +127,9 @@ __launch_bounds__(256) __global__
     k_abs       = warp_max(k_abs, FullMask);
     v_abs       = warp_max(v_abs, FullMask);
 
-    const __half ksh = __float2half_rn(k_abs > 0.0f ? k_abs / ((PackedK || E8Root) ? 7.0f : 127.0f) : 0.0f);
+    const __half ksh =
+        __float2half_rn(k_abs > 0.0f ? k_abs / (E8Lattice ? 14.0f : ((PackedK || E8Root) ? 7.0f : 127.0f))
+                                     : 0.0f);
     const __half vsh = __float2half_rn(v_abs > 0.0f ? v_abs / (PackedV ? 7.0f : 127.0f) : 0.0f);
     const float ks   = __half2float(ksh);
     const float vs   = __half2float(vsh);
@@ -159,24 +161,36 @@ __launch_bounds__(256) __global__
             cache_v[gqa_kv_i4_code_index<Geometry>(page, kv_head, d1 / 2, page_off)] =
                 gqa_kv_pack_i4(gqa_kv_quant_i4_code(v1, vinv), gqa_kv_quant_i4_code(v1_hi, vinv));
         }
-    } else if constexpr (PackedK) {
-        std::int8_t c0 = 0, c1 = 0;
-        if constexpr (E8Lattice) {
-            float k0_scaled = k0 * kinv;
-            float k1_scaled = k1 * kinv;
-            e8_project_8d_warp(k0_scaled, k1_scaled, lane);
-            // NOTE: same deliberate half-coset approximation as the rk4v4-e8 decode path
-            // (see gqa_attention_decode_i8.cuh): the D8+0.5 E8 coset is collapsed by the
-            // rintf()+cast below and never reconstructed, since no coset bit exists in the
-            // packed i4/int8 codes. The rk4v4 (non-E8) path is unaffected.
-            int q0 = static_cast<int>(rintf(k0_scaled));
-            int q1 = static_cast<int>(rintf(k1_scaled));
-            c0 = static_cast<std::int8_t>(max(-8, min(7, q0)));
-            c1 = static_cast<std::int8_t>(max(-8, min(7, q1)));
+    } else if constexpr (E8Lattice) {
+        // Exact Conway-Sloane E8 (rk4v4-e8): project k/(amax/7) onto the lattice and store
+        // the doubled coordinate c = 2*p as a per-dimension int8 code. c is an exact integer
+        // in [-15, 15]; parity carries the coset bit and the group scale amax/14 makes the
+        // generic int8 dequant exact (c * (amax/14) == p * (amax/7)). Replaces the ported
+        // half-coset approximation, which discarded the D8+1/2 coset.
+        float k0_scaled = k0 * (0.5f * kinv);
+        float k1_scaled = k1 * (0.5f * kinv);
+        e8_project_8d_warp(k0_scaled, k1_scaled, lane);
+        cache_k[code_base + lane]      = e8_doubled_code(k0_scaled);
+        cache_k[code_base + lane + 32] = e8_doubled_code(k1_scaled);
+        if constexpr (PackedV) {
+            const float v0_hi = __shfl_down_sync(FullMask, v0, 1);
+            const float v1_hi = __shfl_down_sync(FullMask, v1, 1);
+            if ((lane & 1) == 0) {
+                cache_v[gqa_kv_i4_code_index<Geometry>(page, kv_head, d0 / 2, page_off)] =
+                    gqa_kv_pack_i4(gqa_kv_quant_i4_code(v0, vinv),
+                                   gqa_kv_quant_i4_code(v0_hi, vinv));
+                cache_v[gqa_kv_i4_code_index<Geometry>(page, kv_head, d1 / 2, page_off)] =
+                    gqa_kv_pack_i4(gqa_kv_quant_i4_code(v1, vinv),
+                                   gqa_kv_quant_i4_code(v1_hi, vinv));
+            }
         } else {
-            c0 = gqa_kv_quant_i4_code(k0, kinv);
-            c1 = gqa_kv_quant_i4_code(k1, kinv);
+            auto* cache_v_i8 = reinterpret_cast<std::int8_t*>(cache_v);
+            cache_v_i8[code_base + lane]      = gqa_kv_quant_code(v0, vinv);
+            cache_v_i8[code_base + lane + 32] = gqa_kv_quant_code(v1, vinv);
         }
+    } else if constexpr (PackedK) {
+        std::int8_t c0 = gqa_kv_quant_i4_code(k0, kinv);
+        std::int8_t c1 = gqa_kv_quant_i4_code(k1, kinv);
         const std::int8_t c0_hi = static_cast<std::int8_t>(__shfl_down_sync(FullMask, static_cast<int>(c0), 1));
         const std::int8_t c1_hi = static_cast<std::int8_t>(__shfl_down_sync(FullMask, static_cast<int>(c1), 1));
         const float v0_hi = __shfl_down_sync(FullMask, v0, 1);
@@ -263,7 +277,9 @@ __launch_bounds__(256) __global__ void gqa_attention_prefill_fill_i8_page_kernel
     }
     const float k_abs = warp_max(fmaxf(fabsf(k0), fabsf(k1)), FullMask);
     const float v_abs = warp_max(fmaxf(fabsf(v0), fabsf(v1)), FullMask);
-    const __half ksh  = __float2half_rn(k_abs > 0.0f ? k_abs / ((PackedK || E8Root) ? 7.0f : 127.0f) : 0.0f);
+    const __half ksh  =
+        __float2half_rn(k_abs > 0.0f ? k_abs / (E8Lattice ? 14.0f : ((PackedK || E8Root) ? 7.0f : 127.0f))
+                                     : 0.0f);
     const __half vsh  = __float2half_rn(v_abs > 0.0f ? v_abs / (PackedV ? 7.0f : 127.0f) : 0.0f);
     const float ks    = __half2float(ksh);
     const float vs    = __half2float(vsh);
@@ -299,24 +315,36 @@ __launch_bounds__(256) __global__ void gqa_attention_prefill_fill_i8_page_kernel
             cache_v[gqa_kv_i4_code_index<Geometry>(physical_page, kv_head, d1 / 2, page_off)] =
                 gqa_kv_pack_i4(gqa_kv_quant_i4_code(v1, vinv), gqa_kv_quant_i4_code(v1_hi, vinv));
         }
-    } else if constexpr (PackedK) {
-        std::int8_t c0 = 0, c1 = 0;
-        if constexpr (E8Lattice) {
-            float k0_scaled = k0 * kinv;
-            float k1_scaled = k1 * kinv;
-            e8_project_8d_warp(k0_scaled, k1_scaled, lane);
-            // NOTE: same deliberate half-coset approximation as the rk4v4-e8 decode path
-            // (see gqa_attention_decode_i8.cuh): the D8+0.5 E8 coset is collapsed by the
-            // rintf()+cast below and never reconstructed, since no coset bit exists in the
-            // packed i4/int8 codes. The rk4v4 (non-E8) path is unaffected.
-            int q0 = static_cast<int>(rintf(k0_scaled));
-            int q1 = static_cast<int>(rintf(k1_scaled));
-            c0 = static_cast<std::int8_t>(max(-8, min(7, q0)));
-            c1 = static_cast<std::int8_t>(max(-8, min(7, q1)));
+    } else if constexpr (E8Lattice) {
+        // Exact Conway-Sloane E8 (rk4v4-e8): project k/(amax/7) onto the lattice and store
+        // the doubled coordinate c = 2*p as a per-dimension int8 code. c is an exact integer
+        // in [-15, 15]; parity carries the coset bit and the group scale amax/14 makes the
+        // generic int8 dequant exact (c * (amax/14) == p * (amax/7)). Replaces the ported
+        // half-coset approximation, which discarded the D8+1/2 coset.
+        float k0_scaled = k0 * (0.5f * kinv);
+        float k1_scaled = k1 * (0.5f * kinv);
+        e8_project_8d_warp(k0_scaled, k1_scaled, lane);
+        cache_k[code_base + lane]      = e8_doubled_code(k0_scaled);
+        cache_k[code_base + lane + 32] = e8_doubled_code(k1_scaled);
+        if constexpr (PackedV) {
+            const float v0_hi = __shfl_down_sync(FullMask, v0, 1);
+            const float v1_hi = __shfl_down_sync(FullMask, v1, 1);
+            if ((lane & 1) == 0) {
+                cache_v[gqa_kv_i4_code_index<Geometry>(physical_page, kv_head, d0 / 2, page_off)] =
+                    gqa_kv_pack_i4(gqa_kv_quant_i4_code(v0, vinv),
+                                   gqa_kv_quant_i4_code(v0_hi, vinv));
+                cache_v[gqa_kv_i4_code_index<Geometry>(physical_page, kv_head, d1 / 2, page_off)] =
+                    gqa_kv_pack_i4(gqa_kv_quant_i4_code(v1, vinv),
+                                   gqa_kv_quant_i4_code(v1_hi, vinv));
+            }
         } else {
-            c0 = gqa_kv_quant_i4_code(k0, kinv);
-            c1 = gqa_kv_quant_i4_code(k1, kinv);
+            auto* cache_v_i8 = reinterpret_cast<std::int8_t*>(cache_v);
+            cache_v_i8[code_base + lane]      = gqa_kv_quant_code(v0, vinv);
+            cache_v_i8[code_base + lane + 32] = gqa_kv_quant_code(v1, vinv);
         }
+    } else if constexpr (PackedK) {
+        std::int8_t c0 = gqa_kv_quant_i4_code(k0, kinv);
+        std::int8_t c1 = gqa_kv_quant_i4_code(k1, kinv);
         const std::int8_t c0_hi = static_cast<std::int8_t>(__shfl_down_sync(FullMask, static_cast<int>(c0), 1));
         const std::int8_t c1_hi = static_cast<std::int8_t>(__shfl_down_sync(FullMask, static_cast<int>(c1), 1));
         const float v0_hi = __shfl_down_sync(FullMask, v0, 1);

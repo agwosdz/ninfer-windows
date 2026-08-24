@@ -224,7 +224,10 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
             float vamax             = fmaxf(fabsf(vv0), fabsf(vv1));
             kamax                   = warp_max(kamax, FullMask);
             vamax                   = warp_max(vamax, FullMask);
-            const __half ksh = __float2half_rn(kamax > 0.0f ? kamax / ((PackedK || E8Root) ? 7.0f : 127.0f) : 0.0f);
+            const __half ksh =
+                __float2half_rn(kamax > 0.0f
+                                    ? kamax / (E8Lattice ? 14.0f : ((PackedK || E8Root) ? 7.0f : 127.0f))
+                                    : 0.0f);
             const __half vsh = __float2half_rn(vamax > 0.0f ? vamax / (PackedV ? 7.0f : 127.0f)
                                                                 : 0.0f);
             const float ks          = __half2float(ksh);
@@ -254,32 +257,47 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
                     cache_v_codes[gqa_kv_i4_code_index<Geometry>(physical_page, kv_head, d1 / 2, page_offset)] =
                         gqa_kv_pack_i4(gqa_kv_quant_i4_code(vv1, v_inv), gqa_kv_quant_i4_code(vv1_hi, v_inv));
                 }
-            } else if constexpr (PackedK) {
-                std::int8_t c0 = 0, c1 = 0;
-                if constexpr (E8Lattice) {
-                    float kv0_scaled = kv0 * k_inv;
-                    float kv1_scaled = kv1 * k_inv;
-                    e8_project_8d_warp(kv0_scaled, kv1_scaled, lane);
-                    // NOTE (correctness hardening of the ported codec): e8_project_8d_warp
-                    // returns the nearest E8 lattice point, which may lie in the D8+0.5
-                    // coset (all coordinates half-integral). The i4/int8 codes can only hold
-                    // integers and no coset bit is stored, so the half is intentionally
-                    // collapsed here by the rintf()+cast below and the D8+0.5 coset is NOT
-                    // reconstructed on decode (reconstructed K == code * ks). This is a
-                    // deliberate half-coset approximation of rk4v4-e8, not an exact E8
-                    // lattice projection, for any vector whose nearest lattice point is
-                    // half-integral. Preserving the exact E8 point would require a per-8-dim
-                    // coset bit in the packed layout (a format change, out of scope here).
-                    // The rk4v4 (non-E8) path below is unaffected. Original design credit:
-                    // UDPSendToFailed/ninfer-4090 (and Don-Chad/ninfer-3090 lineage).
-                    int q0 = static_cast<int>(rintf(kv0_scaled));
-                    int q1 = static_cast<int>(rintf(kv1_scaled));
-                    c0 = static_cast<std::int8_t>(max(-8, min(7, q0)));
-                    c1 = static_cast<std::int8_t>(max(-8, min(7, q1)));
+            } else if constexpr (E8Lattice) {
+                // Exact Conway-Sloane E8 (rk4v4-e8): project k/(amax/7) onto the lattice and
+                // store the doubled coordinate c = 2*p as a per-dimension int8 code. c is an
+                // exact integer in [-15, 15]; its parity carries the coset bit, and the group
+                // scale amax/14 (see ksh above) makes the generic int8 dequant exact:
+                // c * (amax/14) == p * (amax/7). This replaces the ported half-coset
+                // approximation, which discarded the D8+1/2 coset and measured worse than
+                // plain rk4v4. Original design credit: UDPSendToFailed/ninfer-4090 (and
+                // Don-Chad/ninfer-3090 lineage); coset-carrying storage added here.
+                float kv0_scaled = kv0 * (0.5f * k_inv);
+                float kv1_scaled = kv1 * (0.5f * k_inv);
+                e8_project_8d_warp(kv0_scaled, kv1_scaled, lane);
+                cache_k_i8[gqa_kv_quant_code_index<Geometry>(physical_page, kv_head, d0, page_offset)] =
+                    e8_doubled_code(kv0_scaled);
+                cache_k_i8[gqa_kv_quant_code_index<Geometry>(physical_page, kv_head, d1, page_offset)] =
+                    e8_doubled_code(kv1_scaled);
+                if constexpr (PackedV) {
+                    const float vv0_hi = __shfl_down_sync(FullMask, vv0, 1);
+                    const float vv1_hi = __shfl_down_sync(FullMask, vv1, 1);
+                    if ((lane & 1) == 0) {
+                        cache_v_codes[gqa_kv_i4_code_index<Geometry>(physical_page, kv_head, d0 / 2,
+                                                                     page_offset)] =
+                            gqa_kv_pack_i4(gqa_kv_quant_i4_code(vv0, v_inv),
+                                           gqa_kv_quant_i4_code(vv0_hi, v_inv));
+                        cache_v_codes[gqa_kv_i4_code_index<Geometry>(physical_page, kv_head, d1 / 2,
+                                                                     page_offset)] =
+                            gqa_kv_pack_i4(gqa_kv_quant_i4_code(vv1, v_inv),
+                                           gqa_kv_quant_i4_code(vv1_hi, v_inv));
+                    }
                 } else {
-                    c0 = gqa_kv_quant_i4_code(kv0, k_inv);
-                    c1 = gqa_kv_quant_i4_code(kv1, k_inv);
+                    auto* cache_v_i8 = reinterpret_cast<std::int8_t*>(cache_v_codes);
+                    cache_v_i8[gqa_kv_quant_code_index<Geometry>(physical_page, kv_head, d0,
+                                                                page_offset)] =
+                        gqa_kv_quant_code(vv0, v_inv);
+                    cache_v_i8[gqa_kv_quant_code_index<Geometry>(physical_page, kv_head, d1,
+                                                                page_offset)] =
+                        gqa_kv_quant_code(vv1, v_inv);
                 }
+            } else if constexpr (PackedK) {
+                std::int8_t c0 = gqa_kv_quant_i4_code(kv0, k_inv);
+                std::int8_t c1 = gqa_kv_quant_i4_code(kv1, k_inv);
                 const std::int8_t c0_hi = static_cast<std::int8_t>(__shfl_down_sync(FullMask, static_cast<int>(c0), 1));
                 const std::int8_t c1_hi = static_cast<std::int8_t>(__shfl_down_sync(FullMask, static_cast<int>(c1), 1));
                 const float vv0_hi = __shfl_down_sync(FullMask, vv0, 1);

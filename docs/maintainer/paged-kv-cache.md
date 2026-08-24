@@ -612,6 +612,23 @@ blocks；其 Full pool 使用 §4.3 的 head-major page-run order。两者保留
 每个 page ID 对应的 aggregate bytes 为 128 KiB；35B-A3B Main Text BF16 对应 64 KiB。Consumer 始终
 看到一个 pool-specific typed plane view，而不是跨模型机制的 composite payload。
 
+Compressed-KV 模式下 K/V plane 的 element type 与 head extent 随 codec 组合变化（D=256、
+quant group 64；per-token per-head payload）：
+
+| KV storage（--kv-dtype） | K plane | V plane | scale planes | per-token/head |
+|---|---|---|---|---:|
+| BF16 | I16 [D] | I16 [D] | 无 | 1024 B |
+| INT8-G64（int8） | I8 [D] | I8 [D] | 2×FP16 [D/64] | 528 B |
+| rk8v4 | I8 [D] | U8 [D/2]（packed int4） | 2×FP16 [D/64] | 400 B |
+| rk4v4 | U8 [D/2]（packed int4） | U8 [D/2] | 2×FP16 [D/64] | 272 B |
+| rk4v4-e8 | I8 [D]（doubled E8 codes） | U8 [D/2] | 2×FP16 [D/64] | 400 B |
+| rk2v4-e8 | U8 [D/4]（E8 240-root cylinder） | U8 [D/2] | 2×FP16 [D/64] | 208 B |
+
+rk4v4-e8 的 K codes 为 exact Conway-Sloane E8 最近格点的 doubled 整数 c=2p∈[-15,15]（4-bit code
+加 coset bit，parity 携带 coset），group scale 为 amax/14，使通用 int8 dequant（c×scale）精确重建
+p×(amax/7)。所有组合由 wrapper 与 target planner 按 closed set 验证；plane extent 与 dtype 不匹配
+在 Op 边界直接抛错。
+
 假设 page ID 为 32-bit，128 Ki context 的单个 block-table row 为 8 KiB。即使
 `max_concurrency=8` 且每个 slot 同时持有 main 与一个 backend row，全部 metadata 也只有 128 KiB。
 
@@ -959,8 +976,17 @@ PagedKVLayerView
 ├── head_dim          D
 ├── num_kv_heads      Hkv
 ├── dtype             BF16 or I8
-└── quant_group       0 or 64
+├── quant_group       0 or 64
+├── packed_v          0/1（compressed V：U8 [D/2] plane）
+├── rotate_k          0/1（K 在量化前做 Hadamard 旋转）
+├── rotate_v          0/1（V 在量化前做 Hadamard 旋转；要求 packed_v）
+├── packed_k          0/1（K：U8 [D/2] plane）
+├── e8_lattice        0/1（K：exact E8 doubled codes，I8 [D] plane）
+└── e8_root           0/1（K：E8 240-root cylinder codes，U8 [D/4] plane）
 ```
+
+codec bool 组合不是自由参数：只有 bf16/int8（全 0）、rk8v4、rk4v4、rk4v4-e8、rk2v4-e8 五种
+closed-set 组合合法，wrapper 与 target planner 各自独立验证，其余组合在 Op 边界抛错。
 
 `P` 和 `Nphysical` 由 route 对 page tensors shape 的解释给出，logical capacity 为
 `Nlogical*P`。当前所有注册
@@ -1109,6 +1135,9 @@ Wrapper 必须验证：
 - K/V page tensors 的 logical geometry 一致、`P=64`，并精确匹配该 route 在 §4.2 的 closed
   contiguous order；
 - physical page count、head geometry、dtype 和 optional scale planes 一致；
+- packed_v / rotate_k / rotate_v / packed_k / e8_lattice / e8_root 构成 closed-set 中的
+  一种 registered 组合（bf16/int8/rk8v4/rk4v4/rk4v4-e8/rk2v4-e8），且 K/V plane extent
+  与组合一致（K：D、D/2 或 D/4；V：D 或 D/2）；
 - single view 的 block table 是 contiguous I32 `[Nlogical]`；batch view 的 table matrix 是 contiguous
   I32 `[Nlogical,C]`，row selectors 是 contiguous I32 `[B]`；
 - BF16 cache 不携带 scale planes，INT8-G64 cache 的 scale shape 和 strides 完整；

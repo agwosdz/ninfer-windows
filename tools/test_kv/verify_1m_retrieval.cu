@@ -58,7 +58,7 @@ int main(int argc, char** argv) {
 
     std::cout << "=================================================================\n";
     std::cout << "   NInfer: True E8 Conway-Sloane Lattice Microbenchmark\n";
-    std::cout << "   Target: NVIDIA GeForce RTX 4090 (sm_89, 24 GB VRAM)\n";
+    std::cout << "   Target: NVIDIA GeForce RTX 5090 (sm_120a, 32 GB VRAM)\n";
     std::cout << "=================================================================\n\n";
 
     const int num_tiles = (num_tokens + ninfer::test_kv::kTokensPerTile - 1) / ninfer::test_kv::kTokensPerTile;
@@ -72,9 +72,9 @@ int main(int argc, char** argv) {
               << (raw_keys_bytes / (1024.0 * 1024.0)) << " MB ("
               << (raw_keys_bytes / (1024.0 * 1024.0 * 1024.0)) << " GB)\n";
     std::cout << "  Method 1: 2-Stage E8 Root Codec: "
-              << (tiles_2bit_bytes / (1024.0 * 1024.0)) << " MB (128 bytes/tok total, 8.0x compression)\n";
+              << (tiles_2bit_bytes / (1024.0 * 1024.0)) << " MB (128 bytes/tok incl. scales; keys only, FP32 baseline: 8.0x)\n";
     std::cout << "  Method 2: General E8 Lattice:   "
-              << (tiles_4bit_bytes / (1024.0 * 1024.0)) << " MB (136 bytes/tok total, 7.2x compression)\n\n";
+              << (tiles_4bit_bytes / (1024.0 * 1024.0)) << " MB (136 bytes/tok incl. scales; keys only, FP32 baseline: 7.5x)\n\n";
 
     // Allocate GPU memory
     float* d_keys = nullptr;
@@ -85,13 +85,29 @@ int main(int argc, char** argv) {
     float* d_scores_fp32 = nullptr;
     float* d_query = nullptr;
 
-    cudaMalloc(&d_keys, raw_keys_bytes);
-    cudaMalloc(&d_tiles_2bit, tiles_2bit_bytes);
-    cudaMalloc(&d_tiles_4bit, tiles_4bit_bytes);
-    cudaMalloc(&d_scores_2bit, scores_bytes);
-    cudaMalloc(&d_scores_4bit, scores_bytes);
-    cudaMalloc(&d_scores_fp32, scores_bytes);
-    cudaMalloc(&d_query, ninfer::test_kv::kHeadDim * sizeof(float));
+    // A full 1M-token run needs roughly 1.3 GB of device memory; on smaller GPUs the
+    // allocation fails instead of crashing, with a clear diagnostic and a nonzero exit.
+    const bool malloc_ok =
+        cudaMalloc(&d_keys, raw_keys_bytes) == cudaSuccess &&
+        cudaMalloc(&d_tiles_2bit, tiles_2bit_bytes) == cudaSuccess &&
+        cudaMalloc(&d_tiles_4bit, tiles_4bit_bytes) == cudaSuccess &&
+        cudaMalloc(&d_scores_2bit, scores_bytes) == cudaSuccess &&
+        cudaMalloc(&d_scores_4bit, scores_bytes) == cudaSuccess &&
+        cudaMalloc(&d_scores_fp32, scores_bytes) == cudaSuccess &&
+        cudaMalloc(&d_query, ninfer::test_kv::kHeadDim * sizeof(float)) == cudaSuccess;
+    if (!malloc_ok) {
+        std::cout << "  [FAIL] cudaMalloc failed (out of device memory? need ~"
+                  << (raw_keys_bytes + tiles_2bit_bytes + tiles_4bit_bytes + 4 * scores_bytes) / (1024.0 * 1024.0)
+                  << " MB) - re-run with fewer tokens, e.g. ninfer_kv_e8_verify 100000\n";
+        cudaFree(d_keys);
+        cudaFree(d_tiles_2bit);
+        cudaFree(d_tiles_4bit);
+        cudaFree(d_scores_2bit);
+        cudaFree(d_scores_4bit);
+        cudaFree(d_scores_fp32);
+        cudaFree(d_query);
+        return EXIT_FAILURE;
+    }
 
     // Generate realistic Gaussian/Transformer keys & query on host
     std::cout << "[2/5] Synthesizing " << num_tokens << " realistic transformer KV activations...\n";

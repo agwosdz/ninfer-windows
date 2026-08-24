@@ -300,6 +300,9 @@ __global__ void e8_general_decode_attention_kernel(
             #pragma unroll
             for (int i = 0; i < 32; ++i) {
                 uint8_t packed = s_tile->codes[t][g * 32 + i];
+                // Low nibble = even dim (q0), high nibble = odd dim (q1); both are
+                // 4-bit two's-complement codes, sign-extended through the int8_t
+                // round-trip ((packed << 4) drops the high nibble before the cast).
                 int s0 = (static_cast<int>(static_cast<int8_t>(packed << 4))) >> 4;
                 int s1 = (static_cast<int>(static_cast<int8_t>(packed & 0xF0))) >> 4;
 

@@ -74,8 +74,10 @@ void gqa_prefill_append_i8_variant(const Tensor& k, const Tensor& v, const Tenso
     if (tokens >= 32) {
         constexpr int kPageBlock     = 256;
         constexpr int kTokensPerTile = 8;
+        // Tightest bound: tiles are aligned to eight-token boundaries and an unknown
+        // base offset shifts the first tile by at most one tile of leading slack.
         const int max_tiles =
-            static_cast<int>(div_up(tokens + kTokensPerTile, kTokensPerTile));
+            static_cast<int>(div_up(tokens + kTokensPerTile - 1, kTokensPerTile));
         const dim3 fill_grid(static_cast<unsigned>(max_tiles),
                              static_cast<unsigned>(Geometry::KVHeads),
                              static_cast<unsigned>(kGqaKvQuantGroups));

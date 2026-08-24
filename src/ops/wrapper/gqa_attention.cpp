@@ -62,11 +62,17 @@ std::uint32_t validate_cache(const PagedKVLayerView& cache, std::int32_t kv_head
     if (cache.dtype == DType::I8 && cache.quant_group != kQuantGroup) {
         throw std::invalid_argument(std::string(op) + ": I8 KV cache must use quant_group 64");
     }
-    if (cache.rotate_v && !cache.packed_v) {
-        throw std::invalid_argument(std::string(op) + ": rotated V requires packed V4");
-    }
-    if (cache.e8_lattice && !cache.packed_k) {
-        throw std::invalid_argument(std::string(op) + ": E8 lattice requires packed K");
+    // The closed set of supported compressed-KV combinations (see KvCacheStorage).
+    // Anything else would silently mis-index the K/V planes.
+    const bool supported =
+        (!cache.rotate_k && !cache.rotate_v && !cache.packed_k && !cache.packed_v && !cache.e8_lattice && !cache.e8_root) ||
+        (cache.rotate_k && cache.rotate_v && !cache.packed_k && cache.packed_v && !cache.e8_lattice && !cache.e8_root) ||
+        (cache.rotate_k && cache.rotate_v && cache.packed_k && cache.packed_v && !cache.e8_lattice && !cache.e8_root) ||
+        (cache.rotate_k && cache.rotate_v && !cache.packed_k && cache.packed_v && cache.e8_lattice && !cache.e8_root) ||
+        (cache.rotate_k && cache.rotate_v && !cache.packed_k && cache.packed_v && !cache.e8_lattice && cache.e8_root);
+    if (!supported) {
+        throw std::invalid_argument(std::string(op) +
+                                    ": unsupported compressed KV cache combination (expected bf16, int8, rk8v4, rk4v4, rk4v4-e8 or rk2v4-e8)");
     }
 
     const std::int32_t physical_pages = cache.k_pages.ne[3];
@@ -129,11 +135,17 @@ std::uint32_t validate_batch_cache(const PagedKVBatchLayerView& cache, std::int3
     if (cache.dtype == DType::I8 && cache.quant_group != kQuantGroup) {
         throw std::invalid_argument(std::string(op) + ": I8 KV cache must use quant_group 64");
     }
-    if (cache.rotate_v && !cache.packed_v) {
-        throw std::invalid_argument(std::string(op) + ": rotated V requires packed V4");
-    }
-    if (cache.e8_lattice && !cache.packed_k) {
-        throw std::invalid_argument(std::string(op) + ": E8 lattice requires packed K");
+    // The closed set of supported compressed-KV combinations (see KvCacheStorage).
+    // Anything else would silently mis-index the K/V planes.
+    const bool supported =
+        (!cache.rotate_k && !cache.rotate_v && !cache.packed_k && !cache.packed_v && !cache.e8_lattice && !cache.e8_root) ||
+        (cache.rotate_k && cache.rotate_v && !cache.packed_k && cache.packed_v && !cache.e8_lattice && !cache.e8_root) ||
+        (cache.rotate_k && cache.rotate_v && cache.packed_k && cache.packed_v && !cache.e8_lattice && !cache.e8_root) ||
+        (cache.rotate_k && cache.rotate_v && !cache.packed_k && cache.packed_v && cache.e8_lattice && !cache.e8_root) ||
+        (cache.rotate_k && cache.rotate_v && !cache.packed_k && cache.packed_v && !cache.e8_lattice && cache.e8_root);
+    if (!supported) {
+        throw std::invalid_argument(std::string(op) +
+                                    ": unsupported compressed KV cache combination (expected bf16, int8, rk8v4, rk4v4, rk4v4-e8 or rk2v4-e8)");
     }
 
     const std::int32_t physical_pages = cache.k_pages.ne[3];
