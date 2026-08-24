@@ -76,6 +76,9 @@ add_library(ninfer_ops STATIC
   ops/launcher/gelu.cu
   ops/launcher/bidirectional_gqa_attention.cu
   ops/launcher/swa.cu
+  ops/launcher/dflash2_dynamic_conv.cu
+  ops/launcher/dflash2_selector_lattice.cu
+  ops/launcher/dflash2_predecessor_ids.cu
   ops/launcher/gqa_attention_decode.cu
   ops/launcher/gqa_attention_decode_bf16.cu
   ops/launcher/gqa_attention_decode_i8.cu
@@ -238,6 +241,9 @@ add_library(ninfer_ops STATIC
   ops/wrapper/argmax.cpp
   ops/wrapper/cast.cpp
   ops/wrapper/causal_conv1d_silu.cpp
+  ops/wrapper/dflash2_dynamic_conv.cpp
+  ops/wrapper/dflash2_selector_lattice.cpp
+  ops/wrapper/dflash2_predecessor_ids.cpp
   ops/wrapper/embedding.cpp
   ops/wrapper/gdn_gating.cpp
   ops/wrapper/gdn_gating_proj.cpp

@@ -47,7 +47,10 @@ void dispatch_tokens(std::int32_t tokens, Launch&& launch) {
 
 } // namespace
 
-SwaPlan swa_resolve_plan(std::int32_t tokens, SwaContextExecutionEnvelope envelope) {
+SwaPlan swa_resolve_plan(std::int32_t tokens, std::int32_t window, SwaContextExecutionEnvelope envelope) {
+    if (window < 0 || (window & (window - 1)) != 0) {
+        throw std::invalid_argument("swa plan: window must be a power of two");
+    }
     if (tokens < 1 || tokens > 16) { throw std::invalid_argument("swa plan: T must be 1..16"); }
     if (envelope.min_context > envelope.max_context) {
         throw std::invalid_argument("swa plan: invalid envelope");
@@ -57,7 +60,8 @@ SwaPlan swa_resolve_plan(std::int32_t tokens, SwaContextExecutionEnvelope envelo
     constexpr std::uint32_t direct_context_limit = 96;
     const bool direct                            = envelope.max_context <= direct_context_limit;
     constexpr std::int32_t key_block             = 32;
-    const std::uint32_t context_rows             = std::min(envelope.max_context, 4095u);
+    const std::uint32_t context_rows =
+        std::min(envelope.max_context, static_cast<std::uint32_t>(window - 1));
     const std::int32_t context_tiles =
         static_cast<std::int32_t>((context_rows + key_block - 1u) / key_block);
     constexpr std::int32_t split_limit = 32;
@@ -82,9 +86,9 @@ const char* swa_route_name(SwaRoute route) {
 
 void swa_launch(const Tensor& q, const Tensor& query_k, const Tensor& query_v,
                 const Tensor& positions, const Tensor& valid_columns, const Tensor& lanes,
-                float scale, const CyclicKVCacheLayerView& context, const SwaPlan& plan,
-                Tensor& partial_acc, Tensor& partial_m, Tensor& partial_l, Tensor& out,
-                cudaStream_t stream) {
+                float scale, std::int32_t window, const CyclicKVCacheLayerView& context,
+                const SwaPlan& plan, Tensor& partial_acc, Tensor& partial_m, Tensor& partial_l,
+                Tensor& out, cudaStream_t stream) {
     dispatch_tokens(q.ne[2], [&]<int Tokens, int Warps>() {
         const bool direct = plan.route == SwaRoute::Direct;
         if (plan.warps != Warps || plan.split_capacity < 1 ||
@@ -106,7 +110,7 @@ void swa_launch(const Tensor& q, const Tensor& query_k, const Tensor& query_v,
                     static_cast<const std::int32_t*>(lanes.data),
                     static_cast<const __nv_bfloat16*>(context.k.data),
                     static_cast<const __nv_bfloat16*>(context.v.data),
-                    static_cast<int>(context.padded_capacity), plan.max_context, 1, scale,
+                    static_cast<int>(context.padded_capacity), plan.max_context, window, 1, scale,
                     static_cast<__nv_bfloat16*>(partial_acc.data),
                     static_cast<float*>(partial_m.data), static_cast<float*>(partial_l.data),
                     static_cast<__nv_bfloat16*>(out.data));
@@ -125,7 +129,7 @@ void swa_launch(const Tensor& q, const Tensor& query_k, const Tensor& query_v,
                 static_cast<const std::int32_t*>(lanes.data),
                 static_cast<const __nv_bfloat16*>(context.k.data),
                 static_cast<const __nv_bfloat16*>(context.v.data),
-                static_cast<int>(context.padded_capacity), plan.max_context, plan.split_capacity,
+                static_cast<int>(context.padded_capacity), plan.max_context, window, plan.split_capacity,
                 scale, static_cast<__nv_bfloat16*>(partial_acc.data),
                 static_cast<float*>(partial_m.data), static_cast<float*>(partial_l.data),
                 static_cast<__nv_bfloat16*>(out.data));
@@ -140,7 +144,7 @@ void swa_launch(const Tensor& q, const Tensor& query_k, const Tensor& query_v,
                 static_cast<const float*>(partial_m.data),
                 static_cast<const float*>(partial_l.data),
                 static_cast<const std::int32_t*>(positions.data),
-                static_cast<const std::int32_t*>(valid_columns.data), plan.max_context,
+                static_cast<const std::int32_t*>(valid_columns.data), plan.max_context, window,
                 plan.split_capacity, static_cast<__nv_bfloat16*>(out.data));
         CUDA_CHECK(cudaGetLastError());
     });

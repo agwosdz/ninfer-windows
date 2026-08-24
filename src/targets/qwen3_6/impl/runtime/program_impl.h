@@ -996,6 +996,17 @@ void ProgramImplCore::materialize_sequence_kv(SequenceState& sequence, std::uint
     if (backend_tokens != 0 && !sequence.kv->backend) {
         throw std::logic_error("backend KV materialization requested without an allocation");
     }
+    // v2 (DFlash2) drafter is all-sliding-window: its real K/V lives in the static
+    // cyclic local cache, and the `dflash.full` paged pool is a one-page structural
+    // stub no drafter kernel reads. The shared KV-bundle machinery otherwise grows it
+    // by prompt/frontier/extent tokens, overshooting the stub's single-page entitlement
+    // ("Paged KV materialize extent is outside entitlement"). Clamp backend materialize
+    // to the stub's current mapped extent (a no-op) for the all-local v2 drafter only;
+    // v1 keeps a full-context pool (full_layers > 0) and is untouched.
+    if (backend_tokens != 0 && sequence.kv->backend &&
+        speculative_backend == SpeculativeBackend::DFlash && DFlashConfig::full_layers == 0) {
+        backend_tokens = std::min(backend_tokens, sequence.kv->backend->mapped_token_capacity());
+    }
     if (main_tokens > sequence.kv->text.mapped_token_capacity()) {
         sequence.kv->text.materialize_tokens(main_tokens, device.stream);
     }
@@ -1013,7 +1024,16 @@ void ProgramImplCore::trim_sequence_kv(SequenceState& sequence, std::uint32_t ma
         throw std::logic_error("backend KV trim requested without an allocation");
     }
     sequence.kv->text.trim_tokens(main_tokens);
-    if (sequence.kv->backend) { sequence.kv->backend->trim_tokens(backend_tokens); }
+    if (sequence.kv->backend) {
+        // Keep the all-local v2 drafter's structural `dflash.full` stub at its mapped
+        // extent (see materialize_sequence_kv); never let a frontier/extent trim release
+        // the stub's reserved structural page.
+        std::uint32_t backend_trim = backend_tokens;
+        if (speculative_backend == SpeculativeBackend::DFlash && DFlashConfig::full_layers == 0) {
+            backend_trim = std::min(backend_trim, sequence.kv->backend->mapped_token_capacity());
+        }
+        sequence.kv->backend->trim_tokens(backend_trim);
+    }
 }
 
 void ProgramImplCore::release_sequence_growth_entitlement(SequenceState& sequence) noexcept {
