@@ -430,7 +430,7 @@ def describe_artifact(path: Path) -> dict[str, Any]:
 
 
 def discover_artifacts(extra_dirs: Sequence[Path] = ()) -> list[dict[str, Any]]:
-    roots = [REPO_ROOT, REPO_ROOT / "out", *extra_dirs]
+    roots = [REPO_ROOT, REPO_ROOT / "out", REPO_ROOT / "models", *extra_dirs]
     seen: dict[str, dict[str, Any]] = {}
     for root in roots:
         if not root.is_dir():

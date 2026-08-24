@@ -258,14 +258,24 @@ def test_artifact_discovery_labels_identity_from_conversion_report(tmp_path) -> 
     plain.write_bytes(b"artifact")
 
     entries = discover_artifacts([tmp_path])
-    by_name = {entry["name"]: entry for entry in entries}
-    assert set(by_name) >= {"qwen3_8_27b.ninfer", "plain.ninfer"}
-    assert by_name["qwen3_8_27b.ninfer"]["weights_id"] == "groupwise-int"
-    assert "groupwise-int" in by_name["qwen3_8_27b.ninfer"]["label"]
-    assert by_name["plain.ninfer"]["model_id"] == ""
+    # Discovery also sees real repository artifacts; scope assertions to the
+    # sandbox directory by resolved path instead of file name.
+    sandbox = {
+        entry["name"]: entry
+        for entry in entries
+        if str(entry["path"]).startswith(str(tmp_path))
+    }
+    assert set(sandbox) >= {"qwen3_8_27b.ninfer", "plain.ninfer"}
+    assert sandbox["qwen3_8_27b.ninfer"]["weights_id"] == "groupwise-int"
+    assert "groupwise-int" in sandbox["qwen3_8_27b.ninfer"]["label"]
+    assert sandbox["plain.ninfer"]["model_id"] == ""
 
     named = assign_variant_names(
-        [by_name["qwen3_8_27b.ninfer"], by_name["plain.ninfer"], by_name["plain.ninfer"]]
+        [
+            sandbox["qwen3_8_27b.ninfer"],
+            sandbox["plain.ninfer"],
+            sandbox["plain.ninfer"],
+        ]
     )
     assert [entry["variant"] for entry in named] == ["qwen3_8_27b", "plain", "plain_2"]
     assert sanitize_variant_name("Qwen3.8 (27B) dflash2!") == "qwen3.8_27b_dflash2"
