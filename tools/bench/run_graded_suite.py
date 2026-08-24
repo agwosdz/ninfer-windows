@@ -403,9 +403,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("dry-run: not serving")
         return 0
 
-    serve = args.serve if args.serve is not None else DEFAULT_SERVE
-    if serve is None or not serve.is_file():
-        raise SystemExit(f"ninfer-serve not found; pass --serve: {serve}")
+    serve = serve_resolve(args.serve)
+    if serve is None:
+        raise SystemExit("ninfer-serve not found; pass --serve <path to ninfer-serve.exe>")
     output_dir = (args.output or REPO_ROOT / "profiles/bench" / f"graded-{utc_stamp()}").resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
