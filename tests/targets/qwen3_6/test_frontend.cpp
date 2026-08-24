@@ -88,13 +88,27 @@ const fi::CompiledChatTemplate& reasoning_effort_template() {
     return value;
 }
 
+// Local HF checkpoint holding the official tokenizer trio. Tests that need it
+// skip cleanly when the directory is absent (mirrors the CUDA-unavailable
+// convention) so the suite stays runnable on machines without the checkpoint.
+const char* kOfficialTokenizerDir = "/home/neroued/models/llm/qwen/Qwen3.6-27B/base-hf-bf16";
+
+bool official_tokenizer_available() {
+    static const bool available = [] {
+        std::ifstream stream(std::string(kOfficialTokenizerDir) + "/tokenizer.json",
+                             std::ios::binary);
+        return static_cast<bool>(stream);
+    }();
+    return available;
+}
+
 const fi::Tokenizer& official_tokenizer() {
     static const std::string tokenizer_json =
-        read_file("/home/neroued/models/llm/qwen/Qwen3.6-27B/base-hf-bf16/tokenizer.json");
+        read_file((std::string(kOfficialTokenizerDir) + "/tokenizer.json").c_str());
     static const std::string tokenizer_config_json =
-        read_file("/home/neroued/models/llm/qwen/Qwen3.6-27B/base-hf-bf16/tokenizer_config.json");
+        read_file((std::string(kOfficialTokenizerDir) + "/tokenizer_config.json").c_str());
     static const std::string generation_config_json =
-        read_file("/home/neroued/models/llm/qwen/Qwen3.6-27B/base-hf-bf16/generation_config.json");
+        read_file((std::string(kOfficialTokenizerDir) + "/generation_config.json").c_str());
     static const fi::Tokenizer tokenizer({.tokenizer_json         = tokenizer_json,
                                           .tokenizer_config_json  = tokenizer_config_json,
                                           .generation_config_json = generation_config_json});
@@ -280,6 +294,10 @@ bool throws_processor_budget(Callable&& callable) {
 }
 
 int test_official_tokenizer_merge() {
+    if (!official_tokenizer_available()) {
+        std::cerr << "SKIP: official tokenizer fixture not present\n";
+        return 0;
+    }
     const fi::Tokenizer& tokenizer = official_tokenizer();
 
     constexpr std::array<std::pair<const char*, int>, 7> appended = {{
@@ -315,6 +333,10 @@ int test_official_tokenizer_merge() {
 }
 
 int test_repeated_special_tokens_scan_linearly() {
+    if (!official_tokenizer_available()) {
+        std::cerr << "SKIP: official tokenizer fixture not present\n";
+        return 0;
+    }
     constexpr std::string_view token = "<|image_pad|>";
     std::string text;
     text.reserve(token.size() * 5'000);
@@ -412,6 +434,10 @@ int test_official_chat_template() {
 }
 
 int test_ordered_instruction_turns() {
+    if (!official_tokenizer_available()) {
+        std::cerr << "SKIP: official tokenizer fixture not present\n";
+        return 0;
+    }
     fi::ChatRenderOptions no_generation;
     no_generation.add_generation_prompt = false;
 
@@ -850,6 +876,10 @@ int test_text_and_image_prepare(const Frontend& frontend) {
 }
 
 int test_media_admission_uses_aggregate_resources(const Frontend& frontend) {
+    if (!official_tokenizer_available()) {
+        std::cerr << "SKIP: official tokenizer fixture not present\n";
+        return 0;
+    }
     constexpr std::size_t kMediaItems     = 17;
     const std::vector<std::uint8_t> bytes = gradient_ppm();
     ninfer::ChatMessage message;
