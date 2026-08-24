@@ -165,3 +165,41 @@ python3 tools/bench/run_serve_concurrency.py \
 Use `--kv-capacity auto` when the fixed corpus needs more shared KV than the default 262,144-token
 pool. A point is intentionally not resumable: combining fragments from separate server processes
 would not preserve either a steady interval or one continuous makespan.
+
+## Graded campaign suite
+
+`run_graded_suite.py` is a capability-aware front end over `run_serve_graded.py`: it discovers
+`.ninfer` artifacts (models/ by default plus `--artifact-dir`s), derives each target's allowed
+drafter families from its identity (sibling `.conversion.json`, falling back to the filename),
+then drives the exact graded real-text campaign for every selected artifact x family x KV
+compression.
+
+Drafter families are restricted per identity, source-grounded in the target code:
+
+| family | allowed identities |
+|---|---|
+| `mtp0` | every artifact (no-speculation baseline) |
+| `mtp3`, `mtp5` | every registered target |
+| `dflash7` | qwen3.6-35b-a3b and qwen3.8-27b `groupwise-int-dflash2` only |
+
+KV sweep covers every registered compression (`bf16`, `int8`, `rk8v4`, `rk4v4`, `rk4v4-e8`,
+`rk2v4-e8`).
+
+```bash
+# Interactive wizard.
+python3 tools/bench/run_graded_suite.py
+
+# Repeatable direct campaign (flags mirror every wizard choice).
+python3 tools/bench/run_graded_suite.py \
+  --artifact dflash2=models/qwen3_8_27b_dflash2.ninfer \
+  --family mtp0 --family dflash7 \
+  --kv-dtype bf16,int8 --max-items 64 \
+  --output profiles/graded/dflash2
+
+# Dry-run: capability matrix and planned configs without serving.
+python3 tools/bench/run_graded_suite.py --dry-run
+```
+
+Outputs mirror `run_serve_graded.py` (`results.jsonl`, `summary.csv`, `summary.md`) under the
+`--output` directory. The wizard is skipped when explicit `--family` flags are supplied, and
+`--dry-run` without families prints the full cross-product plan instead of prompting.
