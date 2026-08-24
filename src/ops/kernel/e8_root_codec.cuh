@@ -11,8 +11,6 @@ namespace ninfer::ops {
 // Algebraic Conway-Sloane E8 Root Quantization (Finds closest root out of 240 minimal vectors)
 // Maps unit vector u in R^8 to index in [0, 239]
 __device__ __forceinline__ uint8_t e8_quantize_root_8d(const float u[8], float out_root[8]) {
-    constexpr float kInvSqrt2 = 0.7071067811865475f;
-
     // 1. Type A Roots: Permutations of (+-1, +-1, 0, 0, 0, 0, 0, 0) -> 112 roots
     float abs_u[8];
     int signs[8];
@@ -95,46 +93,6 @@ __device__ __forceinline__ uint8_t e8_quantize_root_8d(const float u[8], float o
             out_root[i] = (b_signs[i] > 0) ? 0.5f : -0.5f;
         }
         return static_cast<uint8_t>(112 + type_b_code);
-    }
-}
-
-// Fast Multiplier-Free Register Dot Product for E8 Root Code
-__device__ __forceinline__ float e8_decode_dot_8d(const float q[8], uint8_t code) {
-    if (code < 112) {
-        // Type A: 28 pairs * 4 sign combinations
-        int pair_idx = code >> 2;
-        int sign_bits = code & 3;
-        float s_i = (sign_bits & 2) ? 1.0f : -1.0f;
-        float s_j = (sign_bits & 1) ? 1.0f : -1.0f;
-
-        // Pair lookup table
-        constexpr int kPairs[28][2] = {
-            {0,1},{0,2},{0,3},{0,4},{0,5},{0,6},{0,7},
-            {1,2},{1,3},{1,4},{1,5},{1,6},{1,7},
-            {2,3},{2,4},{2,5},{2,6},{2,7},
-            {3,4},{3,5},{3,6},{3,7},
-            {4,5},{4,6},{4,7},
-            {5,6},{5,7},
-            {6,7}
-        };
-
-        int idx_i = kPairs[pair_idx][0];
-        int idx_j = kPairs[pair_idx][1];
-        return s_i * q[idx_i] + s_j * q[idx_j];
-    } else {
-        // Type B: 128 roots (7 independent sign bits, parity for 8th)
-        int b_code = code - 112;
-        int parity = 0;
-        float sum = 0.0f;
-
-        #pragma unroll
-        for (int i = 0; i < 7; ++i) {
-            int bit = (b_code >> i) & 1;
-            parity ^= (1 - bit);
-            sum += bit ? q[i] : -q[i];
-        }
-        sum += (parity == 0) ? q[7] : -q[7];
-        return 0.5f * sum;
     }
 }
 
@@ -385,7 +343,7 @@ __device__ __forceinline__ void e8_encode_root_2stage_8d(
 }
 
 // 16-entry Hyperoctahedral Axis Constant Table (128 bytes in __constant__ memory)
-__constant__ const std::uint64_t c_axis_i8x8[16] = {
+static __device__ __constant__ const std::uint64_t c_axis_i8x8[16] = {
     0x0000000000000001ULL, // +e0 (dim 0, +1)
     0x00000000000000ffULL, // -e0 (dim 0, -1)
     0x0000000000000100ULL, // +e1 (dim 1, +1)
@@ -405,7 +363,7 @@ __constant__ const std::uint64_t c_axis_i8x8[16] = {
 };
 
 // 4-bit Log-Radius Scale Multiplier Table (16 floats, centered at 0.5000 = sqrt(8)/sqrt(32))
-__constant__ const float c_radius_scale[16] = {
+static __device__ __constant__ const float c_radius_scale[16] = {
     0.0000f, // idx 0: Zero vector
     0.0992f, // idx 1: 0.5 * 2^(-7/3)
     0.1250f, // idx 2: 0.5 * 2^(-6/3)

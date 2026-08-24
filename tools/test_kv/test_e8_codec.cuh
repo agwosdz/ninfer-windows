@@ -13,13 +13,13 @@ inline constexpr int kSubDim = 8;
 inline constexpr int kNumSubspaces = kHeadDim / kSubDim; // 32
 inline constexpr int kTokensPerTile = 64;
 
-// 128-byte aligned packed 2-stage E8 root tile layout (64 bytes codes + 64 bytes scales)
+// 128-byte aligned packed 2-stage E8 root tile layout (4,096 bytes codes + 4,096 bytes scales)
 struct alignas(128) E8Packed2BitTile {
     uint8_t codes[kTokensPerTile][kNumSubspaces][2]; // 64 * 32 * 2 = 4,096 bytes
     half scales[kTokensPerTile][kNumSubspaces];       // 64 * 32 * 2 = 4,096 bytes
 };
 
-// 128-byte aligned packed E8 4-bit lattice tile layout (128 bytes codes + 8 bytes scales)
+// 128-byte aligned packed E8 4-bit lattice tile layout (8,192 bytes codes + 512 bytes scales)
 struct alignas(128) E8Packed4BitTile {
     uint8_t codes[kTokensPerTile][kHeadDim / 2];      // 64 * 128 = 8,192 bytes
     half scales[kTokensPerTile][kHeadDim / 64];       // 64 * 4 * 2 = 512 bytes

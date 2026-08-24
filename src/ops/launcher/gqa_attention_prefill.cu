@@ -1,10 +1,12 @@
 // ninfer::ops - gqa_attention prompt-scale dispatcher: geometry, metadata, and
 // dtype route selection. The per-dtype kernels live in
-// gqa_attention_prefill_{bf16,i8}.cu; this TU instantiates no fat kernels.
+// gqa_attention_prefill_{bf16,i8,e8}.cu; this TU instantiates no fat kernels.
 #include "ops/launcher/gqa_attention.h"
 
-#include "ops/kernel/gqa_attention_prefill_common.cuh"
+#include "core/device.h" // CUDA_CHECK
 #include "ops/kernel/gqa_attention_geometry.cuh"
+#include "ops/kernel/gqa_attention_kv_quant.cuh"
+#include "ops/kernel/gqa_attention_prefill_common.cuh"
 
 #include <cstdint>
 
@@ -15,8 +17,13 @@ template <typename Geometry, typename CacheView, typename Metadata>
 void gqa_prefill_append_route(const Tensor& k, const Tensor& v, const Tensor& positions,
                               CacheView cache, Metadata metadata, cudaStream_t stream) {
     if (cache.dtype == DType::I8) {
-        gqa_prefill_append_i8<Geometry, CacheView, Metadata>(k, v, positions, cache, metadata,
-                                                             stream);
+        if (cache.e8_root || cache.e8_lattice) {
+            gqa_prefill_append_e8<Geometry, CacheView, Metadata>(k, v, positions, cache, metadata,
+                                                                 stream);
+        } else {
+            gqa_prefill_append_i8<Geometry, CacheView, Metadata>(k, v, positions, cache, metadata,
+                                                                 stream);
+        }
     } else {
         gqa_prefill_append_bf16<Geometry, CacheView, Metadata>(k, v, positions, cache, metadata,
                                                                stream);
@@ -27,12 +34,27 @@ template <typename Geometry, typename CacheView, typename Metadata>
 void gqa_prefill_attention_route(const Tensor& q, const Tensor& positions, float scale,
                                  const CacheView& cache, Metadata metadata, Tensor& out,
                                  cudaStream_t stream) {
+    // The E8 lattice has no attention-kernel specialization of its own: a
+    // lattice view attends through the packed-K route and only its append
+    // carries the codec. Root views attend through the root-specialized kernel.
     if (cache.dtype == DType::I8) {
-        gqa_prefill_attention_i8<Geometry, CacheView, Metadata>(q, positions, scale, cache,
-                                                                metadata, out, stream);
+        if (cache.e8_root) {
+            gqa_prefill_attention_e8<Geometry, CacheView, Metadata>(q, positions, scale, cache,
+                                                                    metadata, out, stream);
+        } else {
+            gqa_prefill_attention_i8<Geometry, CacheView, Metadata>(q, positions, scale, cache,
+                                                                    metadata, out, stream);
+        }
     } else {
         gqa_prefill_attention_bf16<Geometry, CacheView, Metadata>(q, positions, scale, cache,
                                                                   metadata, out, stream);
+    }
+    if (cache.rotate_v) {
+        const auto tokens = static_cast<std::int32_t>(q.ne[2]);
+        gqa_kv_inverse_rotate_output_kernel<Geometry::QHeads>
+            <<<tokens * Geometry::QHeads * kGqaKvQuantGroups, 32, 0, stream>>>(
+                static_cast<__nv_bfloat16*>(out.data), tokens, tokens, 0, nullptr);
+        CUDA_CHECK(cudaGetLastError());
     }
 }
 

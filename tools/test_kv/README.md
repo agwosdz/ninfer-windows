@@ -16,9 +16,10 @@ key tokens (256-dim, Gaussian), embeds **five high-magnitude "needles"** at
 attention scores against an exact FP32 ground-truth dot product:
 
 - **Method 1 — Two-Stage E8 Root Codec** (`rk2v4-e8`): 2 bits/dim,
-  128 B/token total (~8.0x compression).
-- **Method 2 — General Conway-Sloane E8 Lattice Point** (`rk4v4-e8`):
-  4 bits/dim, ~136 B/token total (~7.2x compression).
+  208 B/token/head K+V incl. group scales (~4.9x vs the 1024 B bf16 K+V).
+- **Method 2 — Exact Conway-Sloane E8 Lattice Point** (`rk4v4-e8`):
+  4-bit code + coset bit per dim (doubled int8 code c = 2·p in [-15, 15]),
+  400 B/token/head K+V incl. group scales (~2.6x vs bf16).
 
 Metrics reported per method: cosine similarity vs FP32 reference, mean abs
 error, max abs error, and per-needle retrieval ranking.
@@ -31,22 +32,30 @@ error, max abs error, and per-needle retrieval ranking.
   `> 15.0`).
 - **Cosine similarity ≈ 100%** between the quantized attention output and
   the FP32 reference across the full 1M-token corpus.
-- The same `rk2v4-e8` path has served a Qwen3.6-27B NVFP4 model
-  end-to-end at **262,144-token context** on a 24 GB-class Blackwell-class
-  GPU (sm_120a) with correct generation.
+- `test_e8_lattice_oracle.cu` separately checks the **production**
+  `rk4v4-e8` codec math in `src/ops/kernel/e8_lattice.cuh`: the device warp
+  projection must equal the exact nearest E8 lattice point (independent FP64
+  algebraic reference cross-validated by exhaustive enumeration), the doubled
+  codes must be exact in [-15, 15] with parity = coset, the exact
+  reconstruction must match plain `rk4v4`'s quality within 1% (parity is the
+  expected relationship: same step grid, E8 shape at 1/16 density), and it
+  must beat the superseded half-coset approximation.
+- The same `rk2v4-e8` path is reported by the source fork as having served a
+  Qwen3.6-27B NVFP4 model end-to-end at **262,144-token context** on a
+  32 GB-class Blackwell GPU (sm_120a); that run has not been independently
+  reproduced in this tree.
 
-This is exactly the property that makes 262K context fit a 24 GB mobile
-GPU: the KV cache lives on-die at 2–4 / 8 bits per dimension instead of
-Full-Precision.
+This is exactly the property that makes 262K context fit a 32 GB GPU: the
+KV cache lives on-die at 2–5 bits per dimension instead of Full-Precision.
 
 ## Building & running
 
 From the NInfer top level (after CUDA 13.1+ / Blackwell is configured):
 
 ```sh
-cmake -S . -B build -GNinja -DCMAKE_CUDA_ARCHITECTURES=120a
-cmake --build build --target ninfer_kv_e8_verify
-ctest --test-dir build -R ninfer_kv_e8_verify --output-on-failure
+cmake -S . -B build -GNinja -DCMAKE_CUDA_ARCHITECTURES=120a -DBUILD_TESTING=ON
+cmake --build build -j
+ctest --test-dir build -R ninfer_kv_e8 --output-on-failure
 ```
 
 Standalone (no CMake needed):
@@ -70,5 +79,8 @@ from **Don-Chad/ninfer-3090**.
 **Full credit for the codec mathematics and the collapsed-KV cache
 architecture goes to the ninfer-4090 fork author.** This tree ports that
 work onto the official Blackwell (sm_120a) upstream codebase for
-live-KV-quantization at long context on 24 GB-class GPUs; the E8 codecs and
-packing math here are unchanged from their source of truth.
+live-KV-quantization at long context on 32 GB-class GPUs. One deviation
+from the source of truth: the ported `rk4v4-e8` projection discarded the
+D8 + 1/2 coset (half-coset approximation); it has been replaced here by
+exact coset-carrying doubled codes so the production path stores the true
+nearest E8 point (covered by the production-codec oracle above).
