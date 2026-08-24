@@ -17,6 +17,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <fstream>
 #include <future>
 #include <iostream>
@@ -88,15 +89,22 @@ const fi::CompiledChatTemplate& reasoning_effort_template() {
     return value;
 }
 
-// Local HF checkpoint holding the official tokenizer trio. Tests that need it
-// skip cleanly when the directory is absent (mirrors the CUDA-unavailable
-// convention) so the suite stays runnable on machines without the checkpoint.
-const char* kOfficialTokenizerDir = "/home/neroued/models/llm/qwen/Qwen3.6-27B/base-hf-bf16";
+// The official tokenizer trio. NINFER_TEST_FIXTURES redirects to any directory
+// carrying the same three files (e.g. extracted from a .ninfer artifact), so the
+// suite is runnable on machines without the original HF checkpoint. Tests that
+// need it skip cleanly when the directory is absent (mirrors the CUDA-unavailable
+// convention).
+const std::string& official_tokenizer_dir() {
+    static const std::string directory = [] {
+        if (const char* root = std::getenv("NINFER_TEST_FIXTURES")) { return std::string(root); }
+        return std::string("/home/neroued/models/llm/qwen/Qwen3.6-27B/base-hf-bf16");
+    }();
+    return directory;
+}
 
 bool official_tokenizer_available() {
     static const bool available = [] {
-        std::ifstream stream(std::string(kOfficialTokenizerDir) + "/tokenizer.json",
-                             std::ios::binary);
+        std::ifstream stream(official_tokenizer_dir() + "/tokenizer.json", std::ios::binary);
         return static_cast<bool>(stream);
     }();
     return available;
@@ -104,11 +112,11 @@ bool official_tokenizer_available() {
 
 const fi::Tokenizer& official_tokenizer() {
     static const std::string tokenizer_json =
-        read_file((std::string(kOfficialTokenizerDir) + "/tokenizer.json").c_str());
+        read_file((official_tokenizer_dir() + "/tokenizer.json").c_str());
     static const std::string tokenizer_config_json =
-        read_file((std::string(kOfficialTokenizerDir) + "/tokenizer_config.json").c_str());
+        read_file((official_tokenizer_dir() + "/tokenizer_config.json").c_str());
     static const std::string generation_config_json =
-        read_file((std::string(kOfficialTokenizerDir) + "/generation_config.json").c_str());
+        read_file((official_tokenizer_dir() + "/generation_config.json").c_str());
     static const fi::Tokenizer tokenizer({.tokenizer_json         = tokenizer_json,
                                           .tokenizer_config_json  = tokenizer_config_json,
                                           .generation_config_json = generation_config_json});
@@ -145,7 +153,7 @@ FrontendResources resources(const std::string& chat_template = thinking_toggle_t
     result.tokenizer_json = nlohmann::json{
         {"model",
          {{"type", "BPE"},
-          {"vocab", {{"x", 0}, {"ä", 10}, {"¸", 11}, {"Ń", 12}}},
+          {"vocab", {{"ÿ", 13}, {"x", 0}, {"ä", 10}, {"¸", 11}, {"Ń", 12}}},
           {"merges", nlohmann::json::array()}}},
         {"added_tokens",
          tokens}}.dump();
@@ -1134,6 +1142,31 @@ int test_utf8_and_hidden_eos(const Frontend& frontend) {
     return failures;
 }
 
+int test_utf8_replacement_bytes(const Frontend& frontend) {
+    // An invalid UTF-8 lead byte in the generated stream publishes exactly one U+FFFD
+    // (EF BF BD) and generation continues. Token 13 is the byte-level-alphabet character
+    // for 0xFF, so the tokenizer publishes the raw invalid lead byte.
+    auto prompt    = frontend.prepare_tokens({0});
+    auto session   = frontend.make_output_session(prompt, {});
+    int failures   = 0;
+    std::uint32_t remaining = 8;
+    const auto bad = session.preview(std::array<ninfer::TokenId, 1>{13}, remaining,
+                                     ninfer::FinishReason::OutputLimit);
+    failures += check(bad.accepted_tokens == 1 && !bad.finished(),
+                      "invalid UTF-8 lead byte unexpectedly ended generation");
+    const auto replaced = session.commit_preview();
+    const std::string replaced_text = channel_text(replaced, ninfer::OutputChannel::Content);
+    failures += check(replaced_text == std::string("\xef\xbf\xbd", 3),
+                      "invalid lead byte did not publish exactly one U+FFFD");
+    remaining -= bad.accepted_tokens;
+    const auto ok = session.preview(std::array<ninfer::TokenId, 1>{0}, remaining,
+                                    ninfer::FinishReason::OutputLimit);
+    const auto after = session.commit_preview();
+    const std::string after_text = channel_text(after, ninfer::OutputChannel::Content);
+    failures += check(after_text == "x", "valid token after a replacement byte was dropped");
+    return failures;
+}
+
 int test_disabled_vision() {
     const Frontend frontend = FrontendFactory::create_component(resources(), false);
     int failures = check(throws_invalid_argument([&] { (void)frontend.prepare(image_input()); }),
@@ -1355,6 +1388,7 @@ int main() {
     failures += test_terminal_flush(frontend);
     failures += test_reasoning_split(frontend);
     failures += test_utf8_and_hidden_eos(frontend);
+    failures += test_utf8_replacement_bytes(frontend);
     failures += test_media_cache_reuses_immutable_payload();
     failures += test_media_payload_outlives_frontend_cache();
     failures += test_media_live_bytes_follow_last_payload_reference();
