@@ -22,6 +22,13 @@ enum class SparseMoeEpilogue : std::uint8_t {
     AddResidual,
 };
 
+// Pure cache hint naming a weight payload the next decode-step consumer will stream. Holds no
+// ownership and aliases caller storage; an empty span disables the hint.
+struct WeightPrefetchSpan {
+    const void* data  = nullptr;
+    std::size_t bytes = 0;
+};
+
 /**
  * Returns the transient capacity required by SparseMoe for every T in the inclusive
  * [min_tokens,max_tokens] interval. The routed QTypes are the fixed implementation profile.
@@ -60,6 +67,7 @@ enum class SparseMoeEpilogue : std::uint8_t {
  * graph-stable transient storage and carries no state beyond the call.
  */
 void sparse_moe(const Tensor& x, const SparseMoeWeights& weights, SparseMoeEpilogue epilogue,
-                Tensor& destination, WorkspaceArena& workspace, cudaStream_t stream);
+                Tensor& destination, WorkspaceArena& workspace, cudaStream_t stream,
+                WeightPrefetchSpan next_prefetch = {});
 
 } // namespace ninfer::ops
