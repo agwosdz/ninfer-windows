@@ -45,7 +45,7 @@ ninfer_bench --weights <artifact.ninfer>
           [-r, --repetitions <n>] [--warmup <n>]
           [--max-ctx <tokens>] [--prefill-chunk <tokens>]
           [--kv-dtype <bf16|int8>]
-          [--mtp-draft-tokens <0..5>] [--lm-head-draft]
+          [--spec <none|mtp|dflash>] [--draft-tokens <n>] [--lm-head-draft]
           [--device <id>] [--no-cuda-graph] [--profile-measured]
           [-o, --output <table|json|csv>] [--output-file <path>]
 ```
@@ -60,9 +60,15 @@ Example:
   -p 512,2048 -n 128 -pg '2048,128' -r 5 --warmup 1
 ```
 
-`bf16` selects BF16 KV storage and `int8` selects INT8 group-64 KV storage. MTP is enabled with
-`--mtp-draft-tokens`; `--lm-head-draft` selects the optimized proposal head. CUDA Graph decode is
-enabled by default.
+`bf16` selects BF16 KV storage and `int8` selects INT8 group-64 KV storage. `--spec` selects the
+speculative backend and `--draft-tokens` its window: MTP accepts 1..5, DFlash 1..15 with the
+Engine enforcing the target-specific cap (the qwen3.8-27B DFlash2 round rejects windows above 7).
+The same binary measures every registered identity, including the qwen3.8-27b weight profiles,
+because artifact loading routes through the public Engine registry. `--lm-head-draft` selects the
+optimized proposal head and requires an active backend. The qwen3.8-27B DFlash2 decode round runs
+eager by contract, so pass `--no-cuda-graph` for truthful `decode_path` reporting there; the
+engine-level matrix runner does this automatically for its dflash modes. CUDA Graph decode is
+enabled by default otherwise.
 
 `--profile-measured` is a benchmark-only profiler boundary. It requires exactly one selected test
 and `-r 1`, synchronizes after warmup, and brackets only the measured repetition with
@@ -724,7 +730,9 @@ test shapes exercise the scalar fallbacks.
 
 Table, JSON, and CSV reports all identify the selected target, artifact, Engine configuration,
 load summary, memory capacity, KV payload, workspace peak, phase throughput, and speculative
-statistics. JSON schema version 10 records the public value objects directly:
+statistics. JSON schema version 12 records the public value objects directly; the config block
+names `speculative_backend` and `draft_tokens` explicitly so variant, draft-model, and
+KV-compression comparisons join on one schema:
 
 - `load`: target, `weights_id`, load/upload time, file/H2D/staging bytes, tensor count, and resource
   count;

@@ -54,6 +54,13 @@ KvCacheStorage parse_kv_cache(std::string_view text) {
     throw std::invalid_argument("--kv-dtype must be bf16 or int8");
 }
 
+SpeculativeBackend parse_spec_backend(std::string_view text) {
+    if (text == "none") { return SpeculativeBackend::None; }
+    if (text == "mtp") { return SpeculativeBackend::Mtp; }
+    if (text == "dflash") { return SpeculativeBackend::DFlash; }
+    throw std::invalid_argument("--spec must be none, mtp, or dflash");
+}
+
 std::vector<int> parse_int_list(std::string_view value, const char* label) {
     std::vector<int> out;
     std::size_t start = 0;
@@ -243,12 +250,12 @@ std::uint32_t BenchTest::requested_output_tokens() const {
                            "requested benchmark output");
 }
 
-std::uint32_t BenchTest::required_context(std::uint32_t mtp_draft_tokens) const {
+std::uint32_t BenchTest::required_context(std::uint32_t draft_tokens) const {
     const std::uint64_t prompt =
         static_cast<std::uint64_t>(kind == TestKind::Decode ? kDecodeSeedTokens : n_prompt);
-    const std::uint64_t decode     = static_cast<std::uint64_t>(has_decode() ? n_gen : 0);
-    const std::uint64_t mtp_margin = mtp_draft_tokens == 0 ? 0 : 2ULL * mtp_draft_tokens;
-    return checked_context(prompt + decode + mtp_margin, "benchmark context requirement");
+    const std::uint64_t decode    = static_cast<std::uint64_t>(has_decode() ? n_gen : 0);
+    const std::uint64_t spec_margin = draft_tokens == 0 ? 0 : 2ULL * draft_tokens;
+    return checked_context(prompt + decode + spec_margin, "benchmark context requirement");
 }
 
 std::string usage_text(std::string_view program) {
@@ -271,8 +278,11 @@ std::string usage_text(std::string_view program) {
         << "  --prefill-chunk <tokens>    multiple of " << kPrefillChunkAlignment
         << " (default: " << kDefaultPrefillChunk << ")\n"
         << "  --kv-dtype <bf16|int8>      KV cache storage (default: bf16)\n"
-        << "  --mtp-draft-tokens <0..5>   speculative draft window (default: 0)\n"
-        << "  --lm-head-draft             use the optimized proposal head; requires MTP\n"
+        << "  --spec <none|mtp|dflash>    speculative backend (default: none)\n"
+        << "  --draft-tokens <n>          draft window; mtp 1.."
+        << kMaxMtpDraftTokens << ", dflash 1.." << kMaxDFlashDraftTokens
+        << " (Engine enforces the target cap)\n"
+        << "  --lm-head-draft             use the optimized proposal head; requires speculation\n"
         << "  --device <id>               CUDA device ordinal (default: 0)\n"
         << "  --no-cuda-graph             use eager decode\n"
         << "  --profile-measured          bracket one measured repetition with CUDA profiler API\n"
@@ -323,12 +333,10 @@ BenchOptions parse_args(int argc, char** argv) {
             options.prefill_chunk = parse_u32(value("--prefill-chunk"), "prefill-chunk");
         } else if (arg == "--kv-dtype") {
             options.kv_cache = parse_kv_cache(value("--kv-dtype"));
-        } else if (arg == "--mtp-draft-tokens") {
-            options.mtp_draft_tokens =
-                parse_u32(value("--mtp-draft-tokens"), "mtp-draft-tokens", true);
-            if (options.mtp_draft_tokens > kMaxMtpDraftTokens) {
-                throw std::invalid_argument("--mtp-draft-tokens must be in [0,5]");
-            }
+        } else if (arg == "--spec") {
+            options.speculative_backend = parse_spec_backend(value("--spec"));
+        } else if (arg == "--draft-tokens") {
+            options.draft_tokens = parse_u32(value("--draft-tokens"), "--draft-tokens", true);
         } else if (arg == "--lm-head-draft") {
             options.proposal_head = ProposalHead::Optimized;
         } else if (arg == "--device") {
@@ -358,9 +366,27 @@ BenchOptions parse_args(int argc, char** argv) {
     if (options.prefill_chunk % kPrefillChunkAlignment != 0) {
         throw std::invalid_argument("--prefill-chunk must be a multiple of 128");
     }
-    if (options.proposal_head == ProposalHead::Optimized && options.mtp_draft_tokens == 0) {
+    switch (options.speculative_backend) {
+    case SpeculativeBackend::None:
+        if (options.draft_tokens != 0) {
+            throw std::invalid_argument("--draft-tokens requires --spec mtp or --spec dflash");
+        }
+        break;
+    case SpeculativeBackend::Mtp:
+        if (options.draft_tokens == 0 || options.draft_tokens > kMaxMtpDraftTokens) {
+            throw std::invalid_argument("--spec mtp requires --draft-tokens in [1,5]");
+        }
+        break;
+    case SpeculativeBackend::DFlash:
+        if (options.draft_tokens == 0 || options.draft_tokens > kMaxDFlashDraftTokens) {
+            throw std::invalid_argument("--spec dflash requires --draft-tokens in [1,15]");
+        }
+        break;
+    }
+    if (options.proposal_head == ProposalHead::Optimized &&
+        options.speculative_backend == SpeculativeBackend::None) {
         throw std::invalid_argument(
-            "--lm-head-draft requires --mtp-draft-tokens greater than zero");
+            "--lm-head-draft requires speculative decoding (--spec with --draft-tokens)");
     }
     return options;
 }
@@ -390,15 +416,15 @@ std::vector<BenchTest> expand_tests(const BenchOptions& options) {
 
 std::uint32_t resolve_max_context(const std::vector<BenchTest>& tests,
                                   std::optional<std::uint32_t> override_max_context,
-                                  std::uint32_t mtp_draft_tokens, bool use_cuda_graph) {
-    if (mtp_draft_tokens > kMaxMtpDraftTokens) {
-        throw std::invalid_argument("mtp draft window must be in [0,5]");
+                                  std::uint32_t draft_tokens, bool use_cuda_graph) {
+    if (draft_tokens > kMaxDFlashDraftTokens) {
+        throw std::invalid_argument("speculative draft window exceeds the supported range");
     }
     std::uint32_t required = 0;
     std::string driver;
     bool has_decode = false;
     for (const BenchTest& test : tests) {
-        const std::uint32_t candidate = test.required_context(mtp_draft_tokens);
+        const std::uint32_t candidate = test.required_context(draft_tokens);
         if (candidate > required) {
             required = candidate;
             driver   = test.label;
@@ -406,7 +432,7 @@ std::uint32_t resolve_max_context(const std::vector<BenchTest>& tests,
         has_decode = has_decode || test.has_decode();
     }
     if (use_cuda_graph && has_decode) {
-        const std::uint32_t candidate = decode_graph_prime_required_context(mtp_draft_tokens);
+        const std::uint32_t candidate = decode_graph_prime_required_context(draft_tokens);
         if (candidate > required) {
             required = candidate;
             driver   = "decode graph prime";
@@ -452,21 +478,32 @@ std::vector<TokenId> prompt_slice(const std::vector<TokenId>& corpus, int n_prom
     return {corpus.begin(), corpus.begin() + n_prompt};
 }
 
-std::string decode_path_name(bool use_cuda_graph, std::uint32_t mtp_draft_tokens) {
-    if (mtp_draft_tokens != 0) { return use_cuda_graph ? "mtp_cuda_graph" : "mtp_eager"; }
-    return use_cuda_graph ? "cuda_graph" : "eager";
-}
-
-std::uint32_t decode_graph_prime_output_tokens(std::uint32_t mtp_draft_tokens) {
-    if (mtp_draft_tokens > kMaxMtpDraftTokens) {
-        throw std::invalid_argument("mtp draft window must be in [0,5]");
+std::string decode_path_name(bool use_cuda_graph, SpeculativeBackend backend) {
+    std::string prefix;
+    switch (backend) {
+    case SpeculativeBackend::Mtp:
+        prefix = "mtp_";
+        break;
+    case SpeculativeBackend::DFlash:
+        prefix = "dflash_";
+        break;
+    case SpeculativeBackend::None:
+        prefix = "";
+        break;
     }
-    return mtp_draft_tokens == 0 ? 3 : 2 * (mtp_draft_tokens + 1) + 1;
+    return prefix + (use_cuda_graph ? "cuda_graph" : "eager");
 }
 
-std::uint32_t decode_graph_prime_required_context(std::uint32_t mtp_draft_tokens) {
-    const std::uint64_t outputs = decode_graph_prime_output_tokens(mtp_draft_tokens);
-    return checked_context(outputs + (mtp_draft_tokens == 0 ? 0 : 2ULL * mtp_draft_tokens),
+std::uint32_t decode_graph_prime_output_tokens(std::uint32_t draft_tokens) {
+    if (draft_tokens > kMaxDFlashDraftTokens) {
+        throw std::invalid_argument("speculative draft window exceeds the supported range");
+    }
+    return draft_tokens == 0 ? 3 : 2 * (draft_tokens + 1) + 1;
+}
+
+std::uint32_t decode_graph_prime_required_context(std::uint32_t draft_tokens) {
+    const std::uint64_t outputs = decode_graph_prime_output_tokens(draft_tokens);
+    return checked_context(outputs + (draft_tokens == 0 ? 0 : 2ULL * draft_tokens),
                            "decode graph prime context requirement");
 }
 
@@ -565,9 +602,10 @@ std::string format_table(const BenchEnvironment& env, const std::vector<TestResu
         << format_bytes(env.memory.kv_payload_bytes) << '\n'
         << "  corpus:     " << env.corpus_path << " (" << env.corpus_tokens << " tokens)\n"
         << "  config:     max_context=" << env.max_context << " prefill_chunk=" << env.prefill_chunk
-        << " kv_cache=" << kv_cache_name(env.kv_cache) << " mtp_k=" << env.mtp_draft_tokens
+        << " kv_cache=" << kv_cache_name(env.kv_cache) << " spec="
+        << speculative_backend_name(env.speculative_backend) << ':' << env.draft_tokens
         << " proposal_head=" << proposal_head_name(env.proposal_head)
-        << " decode_path=" << decode_path_name(env.use_cuda_graph, env.mtp_draft_tokens)
+        << " decode_path=" << decode_path_name(env.use_cuda_graph, env.speculative_backend)
         << " graph_prime="
         << (env.decode_graph_primed
                 ? std::to_string(env.decode_graph_prime_output_tokens) + " outputs"
@@ -672,10 +710,12 @@ std::string format_json(const BenchEnvironment& env, const std::string& command,
         << "    \"max_context\": " << env.max_context << ",\n"
         << "    \"prefill_chunk\": " << env.prefill_chunk << ",\n"
         << "    \"kv_cache\": \"" << kv_cache_name(env.kv_cache) << "\",\n"
-        << "    \"mtp_draft_tokens\": " << env.mtp_draft_tokens << ",\n"
+        << "    \"speculative_backend\": \"" << speculative_backend_name(env.speculative_backend)
+        << "\",\n"
+        << "    \"draft_tokens\": " << env.draft_tokens << ",\n"
         << "    \"proposal_head\": \"" << proposal_head_name(env.proposal_head) << "\",\n"
         << "    \"use_cuda_graph\": " << (env.use_cuda_graph ? "true" : "false") << ",\n"
-        << "    \"decode_path\": \"" << decode_path_name(env.use_cuda_graph, env.mtp_draft_tokens)
+        << "    \"decode_path\": \"" << decode_path_name(env.use_cuda_graph, env.speculative_backend)
         << "\",\n"
         << "    \"decode_graph_prime\": {\"primed\": "
         << (env.decode_graph_primed ? "true" : "false")
@@ -737,7 +777,8 @@ std::string format_json(const BenchEnvironment& env, const std::string& command,
 
 std::string format_csv(const BenchEnvironment& env, const std::vector<TestResult>& results) {
     std::ostringstream out;
-    out << "label,kind,n_prompt,n_gen,target,weights_id,max_context,prefill_chunk,mtp_draft_tokens,"
+    out << "label,kind,n_prompt,n_gen,target,weights_id,max_context,prefill_chunk,"
+           "speculative_backend,draft_tokens,"
            "proposal_head,decode_path,kv_cache,kv_payload_bytes,load_host_to_device_bytes,"
            "weights_capacity_bytes,sequence_capacity_bytes,workspace_capacity_bytes,"
            "request_transient_capacity_bytes,cuda_graph_allowance_bytes,"
@@ -761,8 +802,9 @@ std::string format_csv(const BenchEnvironment& env, const std::vector<TestResult
         out << result.test.label << ',' << kind_string(result.test.kind) << ','
             << result.test.n_prompt << ',' << result.test.n_gen << ',' << env.load.target << ','
             << env.load.weights_id << ',' << env.max_context << ',' << env.prefill_chunk << ','
-            << env.mtp_draft_tokens << ',' << proposal_head_name(env.proposal_head) << ','
-            << decode_path_name(env.use_cuda_graph, env.mtp_draft_tokens) << ','
+            << speculative_backend_name(env.speculative_backend) << ',' << env.draft_tokens << ','
+            << proposal_head_name(env.proposal_head) << ','
+            << decode_path_name(env.use_cuda_graph, env.speculative_backend) << ','
             << kv_cache_name(env.kv_cache) << ',' << env.memory.kv_payload_bytes << ','
             << env.load.host_to_device_bytes << ',' << env.memory.weights.capacity_bytes << ','
             << env.memory.sequence.capacity_bytes << ',' << env.memory.workspace.capacity_bytes
@@ -830,6 +872,18 @@ std::string proposal_head_name(ProposalHead head) {
         return "full";
     case ProposalHead::Optimized:
         return "optimized";
+    }
+    return "unknown";
+}
+
+std::string speculative_backend_name(SpeculativeBackend backend) {
+    switch (backend) {
+    case SpeculativeBackend::None:
+        return "none";
+    case SpeculativeBackend::Mtp:
+        return "mtp";
+    case SpeculativeBackend::DFlash:
+        return "dflash";
     }
     return "unknown";
 }

@@ -250,6 +250,24 @@ python3 tools/bench/run_serve_corpus.py \
   --output profiles/bench/serve_corpus_20260720
 ```
 
+The engine-level matrix sweeps artifact variants, speculative draft modes, and KV-cache
+compression directly through `ninfer_bench`; every case shape runs once per selected kv dtype and
+named variant, and `summary.csv` joins rows on those axes. The qwen3.8-27B comparison across its
+three registered profiles uses:
+
+```bash
+python3 tools/bench/run_ninfer_bench_matrix.py \
+  --variant gi=out/qwen3_8_27b.ninfer \
+  --variant nvfp4=out/qwen3_8_27b_nvfp4.ninfer \
+  --variant dflash2=out/qwen3_8_27b_groupwise-int-dflash2.ninfer \
+  --kv-dtype bf16,int8 --drafts mtp0,mtp3,dflash7 \
+  --output profiles/bench/ninfer_matrix_q38_variant_kv_draft
+```
+
+DFlash cases always run eager because the qwen3.8-27B DFlash2 decode round does not capture CUDA
+graphs; the mtp0/mtp3 points remain graph-replayed. Serving campaigns keep their published INT8
+group-64 KV methodology above; the BF16 KV arm exists only in this engine-level matrix.
+
 For the 27B NVFP4 accuracy run, start the model service with:
 
 ```bash
