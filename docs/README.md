@@ -57,6 +57,12 @@ Artifact and model references:
 - [Qwen3.6-35B-A3B model semantics](maintainer/qwen3.6-35b-a3b-model.md)
 - [Qwen3.6-35B-A3B artifact contracts](maintainer/qwen3.6-35b-a3b-artifact.md)
 
+Maintenance workflow:
+
+- [Upstream feature evaluation, porting, and release workflow](maintainer/upstream-feature-porting.md)
+  — how to triage an upstream commit/PR against this fork, port it on a feature branch in a
+  worktree, verify on the Windows/MSVC build, and land it on master.
+
 Pending implementation work:
 
 - [Softmax Attention organization and migration](maintainer/softmax-attention.md) describes the
