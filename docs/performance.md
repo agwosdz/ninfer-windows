@@ -268,6 +268,24 @@ DFlash cases always run eager because the qwen3.8-27B DFlash2 decode round does 
 graphs; the mtp0/mtp3 points remain graph-replayed. Serving campaigns keep their published INT8
 group-64 KV methodology above; the BF16 KV arm exists only in this engine-level matrix.
 
+For accuracy alongside those throughput arms, `run_serve_graded.py` drives a real `ninfer-serve`
+process with vendored gradeable questions (`bench/fixtures/graded/*.jsonl`) and scores each greedy
+completion exactly, per configuration:
+
+```bash
+python3 tools/bench/run_serve_graded.py \
+  --serve build/apps/ninfer-serve \
+  --artifact qwen3_8_27b=out/qwen3_8_27b_groupwise-int-dflash2.ninfer \
+  --mode mtp0 --mode mtp3 --mode dflash7 \
+  --kv-dtype bf16,int8,rk4v4-e8 \
+  --output profiles/bench/graded_q38_variant_kv_draft
+```
+
+Each summary row pairs exact-match accuracy with wall time and tok/s for one
+artifact/mode/KV configuration, so an answer regression from a compressed KV storage is visible in
+the same campaign as its throughput win. Greedy sampling is the default; stochastic runs are
+allowed but single-sample accuracy is then noisy by construction.
+
 For the 27B NVFP4 accuracy run, start the model service with:
 
 ```bash
