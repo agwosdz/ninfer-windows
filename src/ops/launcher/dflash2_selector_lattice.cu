@@ -59,9 +59,9 @@ __global__ void dflash2_select_candidates_kernel(const __nv_bfloat16* __restrict
     const __nv_bfloat16* col = logits + static_cast<std::int64_t>(t) * vocab;
 
     // Per-thread private top-k (value desc, lower id first on ties).
+    // Unoccupied slots keep the -inf sentinel.
     float my_val[k];
     std::int32_t my_id[k];
-    std::int32_t n_real = 0;
 #pragma unroll
     for (std::int32_t i = 0; i < k; ++i) {
         my_val[i] = __uint_as_float(0xff800000u);  // -inf
@@ -69,31 +69,36 @@ __global__ void dflash2_select_candidates_kernel(const __nv_bfloat16* __restrict
     }
     for (std::int32_t id = threadIdx.x; id < vocab; id += kSelThreads) {
         const float v = __bfloat162float(col[id]);
-        if (v <= my_val[k - 1]) { continue; }  // cannot enter the top-k
+        // Prune with the full contract: value desc, lower id wins ties. Only
+        // reject a value strictly worse than the local worst entry; equal-value
+        // candidates with a lower token id must still be admitted so the global
+        // tie-break can rank them in (a boundary tie is otherwise lost here).
+        if (v < my_val[k - 1] ||
+            (v == my_val[k - 1] && id > my_id[k - 1])) {
+            continue;
+        }
         std::int32_t slot = k - 1;
-        while (slot > 0 && v > my_val[slot - 1]) {
+        while (slot > 0 &&
+               (v > my_val[slot - 1] ||
+                (v == my_val[slot - 1] && id < my_id[slot - 1]))) {
             my_val[slot] = my_val[slot - 1];
-            my_id[slot] = my_id[slot - 1];
+            my_id[slot]  = my_id[slot - 1];
             --slot;
         }
-        // The run is sorted desc: real entries occupy the prefix [0, n_real),
-        // -inf sentinels the suffix. The insertion point is never past the
-        // boundary, so slot == n_real is exactly the "append past the
-        // prefix" case that extends it; slot < n_real shifts within the
-        // real prefix (overflowing the first sentinel off the end).
-        if (slot == n_real) { ++n_real; }
         my_val[slot] = v;
-        my_id[slot] = id;
+        my_id[slot]  = id;
     }
 
     // Block pool: the per-thread runs merged (keys carry the total order, so
-    // a max-elimination picks the winners in order).
+    // a max-elimination picks the winners in order). Every slot is emitted;
+    // -inf positions carry a zero key (no real bf16 logit produces zero), and
+    // the merge skips zero keys.
     __shared__ unsigned long long pool_keys[kSelThreads * k];
     __shared__ std::int32_t pool_ids[kSelThreads * k];
 #pragma unroll
     for (std::int32_t i = 0; i < k; ++i) {
         const std::int32_t base = threadIdx.x * k + i;
-        if (i < n_real) {
+        if (my_val[i] != __uint_as_float(0xff800000u)) {  // -inf sentinel
             pool_keys[base] = sel_key(my_val[i], my_id[i]);
             pool_ids[base] = my_id[i];
         } else {
