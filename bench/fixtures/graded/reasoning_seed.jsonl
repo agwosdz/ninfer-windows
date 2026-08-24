@@ -1,0 +1,18 @@
+{"id": "gsm-natalia-clips", "category": "grade-school-math", "match": "number", "answer": "72", "question": "Natalia sold clips to 48 of her friends in April, and then she sold half as many clips in May. How many clips did Natalia sell altogether in April and May?"}
+{"id": "gsm-weng-babysitting", "category": "grade-school-math", "match": "number", "answer": "10", "question": "Weng earns $12 per hour for babysitting. Yesterday, she just did 50 minutes of babysitting. How much did she earn?"}
+{"id": "gsm-monster-ascent", "category": "grade-school-math", "match": "number", "answer": "57", "question": "A deep-sea monster rises 11 meters every minute and must rise from a depth of 627 meters below sea level. How many minutes will it take the monster to reach sea level?"}
+{"id": "gsm-robe-fiber", "category": "grade-school-math", "match": "number", "answer": "3", "question": "A robe takes 2 bolts of blue fiber and half that much white fiber. How many bolts in total does it take?"}
+{"id": "gsm-printer-rate", "category": "grade-school-math", "match": "number", "answer": "6", "question": "An office printer prints 7 pages per minute. How many minutes will it take to print 42 pages?"}
+{"id": "gsm-tim-apples", "category": "grade-school-math", "match": "number", "answer": "22", "question": "Tim has 4 apples. He buys 3 bags of apples, and each bag contains 6 apples. How many apples does Tim have in total?"}
+{"id": "gsm-train-distance", "category": "grade-school-math", "match": "number", "answer": "150", "question": "A train travels at a constant speed of 60 kilometers per hour for 2.5 hours. How many kilometers does it travel?"}
+{"id": "gsm-sara-reading", "category": "grade-school-math", "match": "number", "answer": "120", "question": "Sara reads 15 pages every day. After 12 days, how many pages does she have left to read if her book has 300 pages?"}
+{"id": "gsm-box-cans", "category": "grade-school-math", "match": "number", "answer": "4", "question": "A box holds exactly 24 cans, and cans are sold in packs of 6. How many packs are needed to completely fill one box?"}
+{"id": "gsm-john-running", "category": "grade-school-math", "match": "number", "answer": "60", "question": "John runs 3 kilometers every morning, 5 days a week. How many kilometers does he run in 4 weeks?"}
+{"id": "math-linear-equation", "category": "algebra", "match": "boxed", "answer": "2", "question": "Solve for x: 2x + 3 = 11. Put your final answer within \\boxed{}."}
+{"id": "math-arithmetic-order", "category": "arithmetic", "match": "boxed", "answer": "53", "question": "Compute 7 * 8 - 6 / 2. Put your final answer within \\boxed{}."}
+{"id": "math-gauss-sum", "category": "algebra", "match": "boxed", "answer": "55", "question": "What is the sum of the first 10 positive integers? Put your final answer within \\boxed{}."}
+{"id": "math-quadratic-function", "category": "algebra", "match": "boxed", "answer": "40", "question": "If f(x) = 3x^2 - 2x, what is f(4)? Put your final answer within \\boxed{}."}
+{"id": "math-exponent-quotient", "category": "arithmetic", "match": "boxed", "answer": "9", "question": "Simplify 3^4 / 3^2. Put your final answer within \\boxed{}."}
+{"id": "math-rectangle-area", "category": "geometry", "match": "boxed", "answer": "91", "question": "What is the area of a rectangle that is 13 centimeters long and 7 centimeters wide? Put your final answer within \\boxed{}."}
+{"id": "exact-gold-symbol", "category": "factual-exact", "match": "exact", "answer": "Au", "question": "What is the chemical symbol of gold? Answer with only the symbol."}
+{"id": "exact-echo-word", "category": "factual-exact", "match": "exact", "answer": "banana", "question": "Reply with exactly one word and nothing else: banana"}
