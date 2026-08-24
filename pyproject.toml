@@ -1,0 +1,68 @@
+[project]
+name = "ninfer-tooling"
+version = "0.1.0"
+description = "NInfer Python tooling: benchmark suites, corpus baker, conversion, reference diagnostics."
+requires-python = ">=3.11,<3.15"
+dependencies = []
+
+[project.optional-dependencies]
+# tools/bench/make_bench_corpus.py: local tokenizer bake (never downloads).
+bench = [
+    "transformers>=4.40",
+    "tokenizers>=0.19",
+]
+# tools/convert: quantization, safetensors packing, recipe verification.
+convert = [
+    "numpy>=1.24",
+    "safetensors",
+    "transformers>=4.40",
+]
+# tools/reference/qwen3_6_{27b,35b}_a3b: artifact-native FP diagnostic.
+reference = [
+    "numpy>=1.24",
+    "tokenizers>=0.22",
+    "flash-linear-attention>=0.5.1",
+    "transformers>=5.12",
+    "pillow>=10",
+    "torchvision",
+    "opencv-python-headless>=4.10",
+]
+# tools/bench/flash_attn_gqa_bench.py: optional GPU reference kernel bench.
+flash-attn = [
+    "flash-attn",
+]
+# eval/ harness backend (eval/requirements.txt remains the pinned source).
+eval = [
+    "PyYAML==6.0.3",
+    "rich==15.0.0",
+    "evalscope[bfcl,needle-haystack]==1.9.0",
+    "soundfile==0.14.0",
+]
+
+[dependency-groups]
+# Test runners plus the numerics the convert/verify test battery imports.
+dev = [
+    "pytest",
+    "torch>=2.7",
+    "numpy>=1.24",
+    "safetensors",
+]
+
+[tool.uv]
+# A bare `uv sync` installs nothing: the bench/matrix/graded suites are pure
+# stdlib. Add heavy tooling explicitly with `--group dev` (pytest + numerics),
+# `--extra bench|convert|reference`, or `--extra eval`.
+default-groups = []
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cu130", marker = "sys_platform == 'win32'" }
+]
+torchvision = [
+  { index = "pytorch-cu130", marker = "sys_platform == 'win32'" }
+]
