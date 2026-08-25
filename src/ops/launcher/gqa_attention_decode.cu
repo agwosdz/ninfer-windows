@@ -200,6 +200,21 @@ void gqa_attention_small_t_launch_for(const Tensor& q, CacheInput input, const T
         launch_for_dtype.template operator()<false>();
     }
     CUDA_CHECK(cudaGetLastError());
+
+    // Decode computes attention over rotated V (V is stored Hadamard-rotated at
+    // write), so the PV result is in rotated space. Restore the un-rotated
+    // output exactly as the prefill route does (gqa_prefill_attention_route),
+    // otherwise every decoded token carries a spurious private rotate.
+    if (cache.rotate_v) {
+        gqa_kv_inverse_rotate_output_kernel<Geometry::QHeads>
+            <<<invocation.width * Geometry::QHeads * kGqaKvQuantGroups, 32, 0, stream>>>(
+                static_cast<__nv_bfloat16*>(out.data), invocation.width, invocation.full_width,
+                invocation.column_begin, invocation.valid_columns == nullptr
+                                              ? nullptr
+                                              : static_cast<const std::int32_t*>(
+                                                    invocation.valid_columns->data));
+        CUDA_CHECK(cudaGetLastError());
+    }
 }
 
 void gqa_attention_small_t_launch(const Tensor& q, const Tensor& k, const Tensor& v,
