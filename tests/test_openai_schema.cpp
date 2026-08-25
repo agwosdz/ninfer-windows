@@ -617,18 +617,47 @@ int test_parse_tool_message_content_parts() {
         throws_api([&] { (void)parse_chat_completion_request(null_content, default_limits()); }),
         "null tool content rejected");
 
-    for (const char* bad_type : {"image_url", "video_url", "input_audio", "file"}) {
-        Json bad_tool = multi_tool;
-        bad_tool["content"] =
-            Json::array({Json{{"type", bad_type},
-                              {"image_url", Json{{"url", "https://example.test/x.png"}}}}});
-        Json bad_body;
-        bad_body["model"]    = "m";
-        bad_body["messages"] = Json::array({bad_tool});
-        failures +=
-            check(throws_api([&] { (void)parse_chat_completion_request(bad_body, default_limits()); }),
-                  std::string("non-text tool content part '") + bad_type + "' rejected");
-    }
+    // Media parts are legal on tool messages (VSCode Copilot's browser tool returns
+    // screenshots as image_url array content); they parse like any other role and the
+    // media reaches the vision path.
+    const Json image_tool = Json{{"role", "tool"},
+                                 {"tool_call_id", "call_1"},
+                                 {"content",
+                                  Json::array({Json{{"type", "text"}, {"text", "Screenshot saved"}},
+                                                Json{{"type", "image_url"},
+                                                     {"image_url",
+                                                      Json{{"url", "data:image/png;base64,AA=="}}}}})}};
+    Json image_body;
+    image_body["model"]    = "m";
+    image_body["messages"] = Json::array({image_tool});
+    const GenerationRequest image_req = parse_chat_completion_request(image_body, default_limits());
+    failures += check(image_req.messages[0].content.size() == 2,
+                      "tool message media array parsed");
+    failures += check(image_req.messages[0].content[1].kind == ContentKind::Image,
+                      "tool message image part kind");
+    failures += check(image_req.messages[0].content[1].source.kind ==
+                          ninfer::product::media_acquire::SourceKind::Data,
+                      "tool message image source parsed");
+    failures += check(image_req.media_item_count() == 1, "tool message media counted");
+    const ninfer::PromptInput image_prompt = translate(image_req);
+    failures += check(image_prompt.messages[0].parts.size() == 2, "tool media translated parts");
+    failures += check(image_prompt.messages[0].parts[1].kind == ninfer::MessagePartKind::Media &&
+                          image_prompt.messages[0].parts[1].media.kind == ninfer::MediaKind::Image,
+                      "tool message image translated to media part");
+    // An unsupported part type on a tool message still fails, like on any other role:
+    // it parses as Unsupported and translate rejects it with modality_not_supported.
+    Json bad_tool = multi_tool;
+    bad_tool["content"] =
+        Json::array({Json{{"type", "file"}, {"file_url", "https://example.test/f.pdf"}}});
+    Json bad_body;
+    bad_body["model"]    = "m";
+    bad_body["messages"] = Json::array({bad_tool});
+    const GenerationRequest unsupported_req = parse_chat_completion_request(bad_body, default_limits());
+    failures += check(unsupported_req.messages[0].content[0].kind == ContentKind::Unsupported,
+                      "unsupported tool content part marked Unsupported");
+    failures += check(throws_api([&] { (void)translate(unsupported_req); }),
+                      "unsupported tool content part rejected in translation");
+
     Json text_missing = multi_tool;
     text_missing["content"] = Json::array({Json{{"type", "text"}}});
     Json missing_body;
