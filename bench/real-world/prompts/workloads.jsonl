@@ -1,0 +1,4 @@
+{"id":"code_review","prompt_type":"code_review","budget_tokens":512,"prompt":"Continue this numbered code review of the following Python service, listing correctness, concurrency, transaction, security, resource management and error-handling problems only.\\n\\ndef transfer(sender, receiver, amount):\\n    if amount <= 0: raise ValueError('amount')\\n    sender.balance -= amount\\n    receiver.balance += amount\\n    return True\\n\\n1."}
+{"id":"math","prompt_type":"math","budget_tokens":256,"prompt":"Let f(x)=x^3-6x^2+11x-6. Find all distinct real roots of f and show the factored form step by step."}
+{"id":"chinese_composition","prompt_type":"chinese","budget_tokens":384,"prompt":"请用三句话解释图灵机的基本原理，并各举一个现实中的例子。"}
+{"id":"long_context_retrieval","prompt_type":"retrieval","budget_tokens":256,"prompt":"The following document lists project milestones. After reading it, state the exact milestone number and date mentioned at the END of the document."}
