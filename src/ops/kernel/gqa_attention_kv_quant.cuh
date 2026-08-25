@@ -84,14 +84,9 @@ __device__ __forceinline__ void gqa_kv_hadamard64(float& x0, float& x1,
     for (int offset = 1; offset < 32; offset <<= 1) {
         const float y0 = __shfl_xor_sync(mask, x0, offset);
         const float y1 = __shfl_xor_sync(mask, x1, offset);
-        // The butterfly operates in lane space (dims d0 = grp*64 + lane). In the
-        // fused GQA kernels `lane` is threadIdx.x & 31 (valid for multi-warp
-        // CTAs), so the parity selector MUST use the lane, not the absolute
-        // thread index; otherwise every rotated K/V is corrupted in any launch
-        // with more than one warp per CTA.
-        const bool hi = ((static_cast<int>(threadIdx.x) & 31) & offset) != 0;
-        x0            = hi ? y0 - x0 : x0 + y0;
-        x1            = hi ? y1 - x1 : x1 + y1;
+        const bool hi  = (static_cast<int>(threadIdx.x) & offset) != 0;
+        x0             = hi ? y0 - x0 : x0 + y0;
+        x1             = hi ? y1 - x1 : x1 + y1;
     }
     const float a = x0;
     const float b = x1;
