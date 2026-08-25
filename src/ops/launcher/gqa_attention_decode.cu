@@ -5,6 +5,7 @@
 
 #include "ops/common/math.h"
 #include "ops/kernel/gqa_attention_decode.cuh"
+#include "ops/kernel/gqa_attention_kv_quant.cuh"
 #include "core/device.h" // CUDA_CHECK
 
 #include <cstdint>
