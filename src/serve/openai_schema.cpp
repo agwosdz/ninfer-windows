@@ -214,8 +214,11 @@ void parse_messages(const Json& body, GenerationRequest& out) {
                 bad_request("tool messages must contain content", "messages");
             }
             turn.tool_call_id = item.at("tool_call_id").get<std::string>();
-            // Per the OpenAI contract, only text parts are valid in tool messages.
-            parse_content_parts(item.at("content"), turn, i, {"text"});
+            // Array content (text + image_url/video_url parts) is legal on tool messages and
+            // is how clients such as VSCode Copilot's browser tool return screenshots; parse it
+            // like any other role so media reaches the vision path. Unsupported part types are
+            // still rejected at translation.
+            parse_content_parts(item.at("content"), turn, i);
             out.messages.push_back(std::move(turn));
             continue;
         }
