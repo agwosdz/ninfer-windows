@@ -72,6 +72,28 @@ consumption), which static analysis and standalone codec tests cannot
 reach — needs a real fused-kernel round-trip harness or an on-device dump
 through the actual decode for an rk config.
 
+## Root cause (fixed)
+
+The rotated compressed-KV modes store V Hadamard-rotated at write. The
+decode attention PV result `Σp·rot(V)` is therefore in rotated space and
+must be inverse-rotated before it becomes the model output. The prefill
+route does this (`gqa_kv_inverse_rotate_output_kernel`), but the **decode
+route did not**, so every decoded token carried a spurious private rotate —
+garbage from the very first decoded token, only in rotated modes.
+
+Fix (`3fb8e212` + include `97b50e3d`): apply
+`gqa_kv_inverse_rotate_output_kernel` to the decode output when
+`rotate_v`, mirroring prefill; add the `gqa_attention_kv_quant.cuh` include
+to `gqa_attention_decode.cu`.
+
+The earlier `kGqaHadamard64` parity change (`dc1113d7`) was a functional
+no-op for warp-aligned blockDim and was reverted (`da69d9ae`).
+
+Backports:
+- `pr1-compressed-kv` already carried the identical inverse-rotate.
+- `feat/compressed-kv-storages` → `backport/rk-fix-storages`
+  (`ad6759fa` + `ce913b40`).
+
 ## Backport requirement (once the fix lands on master)
 
 When the packed-V defect is fixed and verified on master, the same fix must
