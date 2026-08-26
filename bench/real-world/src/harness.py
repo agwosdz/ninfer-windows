@@ -42,6 +42,63 @@ class MockBackend(Backend):
                 "prompt_tokens": len(prompt) // 2, "completion_tokens": max_tokens,
                 "finish_reason": "length", "cached_tokens": 0, "valid": True}
 
+class ServeBackend(Backend):
+    "Spawns ninfer-serve for a target and talks to it over the OpenAI-compatible API."
+    def __init__(self, binary, wait_ready_seconds=180):
+        self._binary = Path(binary); self._wait = wait_ready_seconds
+        self._proc = None; self._base_url = None
+    def open(self, target, config):
+        port = int(target.get("port", 8080))
+        cmd = [str(self._binary), str(target["artifact"]),
+               "--port", str(port),
+               "--max-context", str(target.get("max_context", 16384)),
+               "--kv-dtype", str(target.get("kv_dtype", "int8"))]
+        spec = target.get("spec")
+        if spec and spec != "none":
+            cmd += ["--spec", str(spec)]
+            if target.get("draft_tokens"):
+                cmd += ["--draft-tokens", str(int(target["draft_tokens"]))]
+        self._proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                      stderr=subprocess.PIPE, text=True)
+        self._base_url = f"http://127.0.0.1:{port}/v1"
+        if not self._wait_ready():
+            self.close(); raise RuntimeError("ninfer-serve failed to become ready: " + " ".join(cmd))
+    def _wait_ready(self):
+        deadline = time.monotonic() + self._wait
+        while time.monotonic() < deadline:
+            try:
+                with urllib.request.urlopen(self._base_url + "/models", timeout=2) as resp:
+                    if resp.status == 200: return True
+            except Exception: pass
+            time.sleep(1.0)
+        return False
+    def ready(self): return self._proc is not None and self._proc.poll() is None
+    def request(self, prompt, max_tokens, temperature, request_index=0,
+                timeout_seconds=300, model_alias="ninfer"):
+        if not self.ready(): return {"valid": False, "error": "serve process exited"}
+        start = time.monotonic()
+        try:
+            data = _openai_chat_request(self._base_url, model_alias, prompt, max_tokens,
+                                        temperature, timeout_seconds)
+            elapsed = time.monotonic() - start
+            usage = data.get("usage", {})
+            completion_tokens = int(usage.get("completion_tokens", 0))
+            prompt_tokens = int(usage.get("prompt_tokens", 0))
+            finish = ((data.get("choices") or [{}])[0]).get("finish_reason")
+            cached = int((usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0))
+            valid = finish == "length" and completion_tokens == max_tokens
+            return {"ttft_s": None, "elapsed_s": elapsed,
+                    "prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens,
+                    "finish_reason": finish, "cached_tokens": cached, "valid": valid}
+        except Exception as exc:
+            return {"valid": False, "error": str(exc)}
+    def close(self):
+        if self._proc is not None:
+            self._proc.terminate()
+            try: self._proc.wait(timeout=10)
+            except subprocess.TimeoutExpired: self._proc.kill()
+            self._proc = None
+
 def compute_metrics(reqs, wall_seconds=None):
     valid = [r for r in reqs if r.get("valid")]
     ttft = median([r.get("ttft_s") for r in valid])
@@ -52,7 +109,7 @@ def compute_metrics(reqs, wall_seconds=None):
     aggregate = None
     if valid:
         total = sum(r["completion_tokens"] for r in valid)
-        aggregate = total / wall_seconds if wall_seconds else (total / max(r["elapsed_s"] for r in valid))
+        aggregate = (total / wall_seconds) if wall_seconds else (total / max(r["elapsed_s"] for r in valid))
     return {"ttft_s": ttft, "decode_tok_s": decode, "e2e_tok_s": e2e,
             "aggregate_tok_s": aggregate, "valid_count": len(valid), "request_count": len(reqs)}
 
@@ -90,7 +147,7 @@ def format_summary(target_id, mode, metrics):
 def main(argv=None):
     parser = argparse.ArgumentParser(description="ninfer-serve real-world bench")
     parser.add_argument("config")
-    parser.add_argument("--dry-run", action="store_true", help="mock backend; no server")
+    parser.add_argument("--dry-run", action="store_true", help="use mock backend; no server")
     parser.add_argument("--limit", type=int, default=None, help="first N prompts")
     parser.add_argument("--modes", default="single,concurrent", help="single,concurrent")
     args = parser.parse_args(argv)
@@ -111,15 +168,16 @@ def main(argv=None):
                     "kv_dtype": "int8", "spec": "none", "port": 0}]
     else:
         serve = config.get("serve", {})
-        backend = ServeBackendStub()
+        backend = ServeBackend(serve.get("binary", "build/apps/ninfer-serve"),
+                               float(serve.get("wait_ready_seconds", 180)))
         targets = config.get("targets", [])
         if not targets: raise SystemExit("no targets in config")
     try:
         for target in targets:
             backend.open(target, config)
-            print(f"target {target['id']}: backend ready")
+            print(f"target {target['id']}: backend ready", flush=True)
             for prompt in prompts:
-                print(f"  prompt {prompt['id']} ({prompt.get('prompt_type','?')})")
+                print(f"  prompt {prompt['id']}", flush=True)
                 if "single" in modes:
                     m = compute_metrics(run_single(backend, prompt, config), None)
                     print("    " + format_summary(target["id"], "single", m))
@@ -130,12 +188,6 @@ def main(argv=None):
     finally:
         backend.close()
     return 0
-
-class ServeBackendStub:
-    def open(self, target, config): raise SystemExit("serve backend not implemented in dry-run")
-    def close(self): pass
-    def ready(self): return False
-    def request(self, prompt, max_tokens, temperature, request_index=0): return {"valid": False, "error": "serve stub"}
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
