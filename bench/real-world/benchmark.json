@@ -1,0 +1,32 @@
+{
+  "runs": 5,
+  "rounds": 5,
+  "concurrency": 4,
+  "max_tokens": 512,
+  "warmup_requests": 1,
+  "temperature": 0,
+  "prompt_token_tolerance": 16,
+  "request_timeout_seconds": 300,
+  "prompts": "prompts/workloads.jsonl",
+  "serve": { "binary": "build/apps/ninfer-serve", "wait_ready_seconds": 180 },
+  "targets": [
+    { "id": "cfi-mtp3-int8", "artifact": "models/qwen3_8_27b_coldfusion.ninfer",
+      "alias": "qwen3.8-27b", "kv_dtype": "int8", "spec": "mtp",
+      "draft_tokens": 3, "max_context": 262144, "port": 8080 },
+    { "id": "cf-mtp3-rk8v4", "artifact": "models/qwen3_8_27b_coldfusion.ninfer",
+      "alias": "qwen3.8-27b", "kv_dtype": "rk8v4", "spec": "mtp",
+      "draft_tokens": 3, "max_context": 262144, "port": 8081 },
+    { "id": "nvfp4-mtp3-int8", "artifact": "models/qwen3_8_27b_nvfp4.ninfer",
+      "alias": "qwen3.8-27b", "kv_dtype": "int8", "spec": "mtp",
+      "draft_tokens": 3, "max_context": 262144, "port": 8082 },
+    { "id": "nvfp4-mtp3-rk8v4", "artifact": "models/qwen3_8_27b_nvfp4.ninfer",
+      "alias": "qwen3.8-27b", "kv_dtype": "rk8v4", "spec": "mtp",
+      "draft_tokens": 3, "max_context": 262144, "port": 8083 },
+    { "id": "df7-int8", "artifact": "models/qwen3_8_27b_dflash2.ninfer",
+      "alias": "qwen3.8-27b", "kv_dtype": "int8", "spec": "dflash",
+      "draft_tokens": 7, "max_context": 262144, "port": 8084 },
+    { "id": "df7-rk8v4", "artifact": "models/qwen3_8_27b_dflash2.ninfer",
+      "alias": "qwen3.8-27b", "kv_dtype": "rk8v4", "spec": "dflash",
+      "draft_tokens": 7, "max_context": 262144, "port": 8085 }
+  ]
+}
