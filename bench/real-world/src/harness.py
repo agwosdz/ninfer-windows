@@ -201,7 +201,8 @@ def main(argv=None):
             backend.open(target, config)
             print(f"target {target['id']}: backend ready", flush=True)
             for prompt in prompts:
-                print(f"  prompt {prompt['id']}", flush=True)
+                p_text = prompt.get("prompt", "")[:120].replace("\n", " ")
+                print(f"  prompt {prompt['id']} | {p_text}", flush=True)
                 if "single" in modes:
                     m = compute_metrics(run_single(backend, prompt, config, target.get("alias", "ninfer")), None)
                     print("    " + format_summary(target["id"], "single", m))
