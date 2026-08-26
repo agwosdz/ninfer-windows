@@ -15,6 +15,27 @@ def load_json(path):
     with Path(path).open("r", encoding="utf-8") as fh:
         return json.load(fh)
 
+
+def kill_existing_servers():
+    """Terminate any running ninfer-serve instance.
+
+    Only one ninfer-serve can run at a time (single GPU / single resident model),
+    so before launching a target we make sure no stale server is still up.
+    """
+    import platform
+    if platform.system() == "Windows":
+        proc = subprocess.run(
+            ["taskkill", "/F", "/IM", "ninfer-serve.exe"],
+            capture_output=True, text=True)
+        if proc.returncode == 0:
+            print("  [serve] terminated pre-existing ninfer-serve.exe", flush=True)
+        else:
+            # returncode 128 means "no such process" - that is the expected clean state
+            if "not found" in proc.stderr.lower() or "no instances" in proc.stderr.lower():
+                pass
+    else:
+        subprocess.run(["pkill", "-f", "ninfer-serve"], capture_output=True, text=True)
+
 def _openai_chat_request(base_url, model, prompt, max_tokens, temperature, timeout_seconds):
     body = {"model": model, "messages": [{"role": "user", "content": prompt}],
             "max_tokens": max_tokens, "temperature": temperature, "stream": False}
@@ -60,6 +81,7 @@ class ServeBackend(Backend):
             cmd += ["--spec", str(spec)]
             if target.get("draft_tokens"):
                 cmd += ["--draft-tokens", str(int(target["draft_tokens"]))]
+        kill_existing_servers()
         log_dir = Path("bench/real-world/_servers"); log_dir.mkdir(parents=True, exist_ok=True)
         so = (log_dir / f"serve-{port}.out.log").open("w", encoding="utf-8")
         se = (log_dir / f"serve-{port}.err.log").open("w", encoding="utf-8")
@@ -210,6 +232,10 @@ def main(argv=None):
                     results, walls = run_concurrent(backend, prompt, config, target.get("alias", "ninfer"))
                     m = compute_metrics(results, statistics.median(walls) if walls else None)
                     print("    " + format_summary(target["id"], "concurrent", m))
+            # Only one ninfer-serve instance can run at a time (single GPU): tear down
+            # this target's server before the next target starts.
+            backend.close()
+            print(f"target {target['id']}: server stopped", flush=True)
     finally:
         backend.close()
     return 0
