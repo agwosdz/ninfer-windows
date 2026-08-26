@@ -64,7 +64,7 @@ class ServeBackend(Backend):
         so = (log_dir / f"serve-{port}.out.log").open("w", encoding="utf-8")
         se = (log_dir / f"serve-{port}.err.log").open("w", encoding="utf-8")
         print(f"  [serve] spawning: {" ".join(cmd)}", flush=True)
-        print(f"  [serve] server log: {so.name}", flush=True)
+        print(f"  [serve] server log: {se.name} (stdout is quiet; stderr carries load progress)", flush=True)
         self._proc = subprocess.Popen(cmd, stdout=so, stderr=se, text=True)
         self._so = so; self._se = se
         self._base_url = f"http://127.0.0.1:{port}"
@@ -215,6 +215,7 @@ def main(argv=None):
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
+
 
 
 
