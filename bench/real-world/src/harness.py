@@ -5,6 +5,8 @@ import argparse, json, statistics, subprocess, sys, time, urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+VERBOSE = False
+
 def median(values):
     values = [v for v in values if v is not None]
     return statistics.median(values) if values else None
@@ -46,7 +48,7 @@ class ServeBackend(Backend):
     "Spawns ninfer-serve for a target and talks to it over the OpenAI-compatible API."
     def __init__(self, binary, wait_ready_seconds=180):
         self._binary = Path(binary); self._wait = wait_ready_seconds
-        self._proc = None; self._base_url = None
+        self._proc = None; self._base_url = None; self._model_id = None
     def open(self, target, config):
         port = int(target.get("port", 8080))
         cmd = [str(self._binary), str(target["artifact"]),
@@ -58,27 +60,41 @@ class ServeBackend(Backend):
             cmd += ["--spec", str(spec)]
             if target.get("draft_tokens"):
                 cmd += ["--draft-tokens", str(int(target["draft_tokens"]))]
-        self._proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
-                                      stderr=subprocess.PIPE, text=True)
-        self._base_url = f"http://127.0.0.1:{port}/v1"
+        log_dir = Path("bench/real-world/_servers"); log_dir.mkdir(parents=True, exist_ok=True)
+        so = (log_dir / f"serve-{port}.out.log").open("w", encoding="utf-8")
+        se = (log_dir / f"serve-{port}.err.log").open("w", encoding="utf-8")
+        print(f"  [serve] spawning: {" ".join(cmd)}", flush=True)
+        print(f"  [serve] server log: {so.name}", flush=True)
+        self._proc = subprocess.Popen(cmd, stdout=so, stderr=se, text=True)
+        self._so = so; self._se = se
+        self._base_url = f"http://127.0.0.1:{port}"
         if not self._wait_ready():
             self.close(); raise RuntimeError("ninfer-serve failed to become ready: " + " ".join(cmd))
     def _wait_ready(self):
         deadline = time.monotonic() + self._wait
         while time.monotonic() < deadline:
             try:
-                with urllib.request.urlopen(self._base_url + "/models", timeout=2) as resp:
-                    if resp.status == 200: return True
+                with urllib.request.urlopen(self._base_url + "/v1/models", timeout=2) as resp:
+                    if resp.status == 200:
+                        try:
+                            data = json.loads(resp.read().decode("utf-8"))
+                            items = data.get("data") or []
+                            if items:
+                                self._model_id = items[0].get("id")
+                        except Exception:
+                            pass
+                        return True
             except Exception: pass
             time.sleep(1.0)
         return False
     def ready(self): return self._proc is not None and self._proc.poll() is None
     def request(self, prompt, max_tokens, temperature, request_index=0,
-                timeout_seconds=300, model_alias="ninfer"):
+                timeout_seconds=300, model_alias=None):
         if not self.ready(): return {"valid": False, "error": "serve process exited"}
+        alias = model_alias or getattr(self, "_model_id", None) or "ninfer"
         start = time.monotonic()
         try:
-            data = _openai_chat_request(self._base_url, model_alias, prompt, max_tokens,
+            data = _openai_chat_request(self._base_url, alias, prompt, max_tokens,
                                         temperature, timeout_seconds)
             elapsed = time.monotonic() - start
             usage = data.get("usage", {})
@@ -99,8 +115,13 @@ class ServeBackend(Backend):
             except subprocess.TimeoutExpired: self._proc.kill()
             self._proc = None
 
+def _note_err(req):
+    if req.get("error") and VERBOSE:
+        print("      ! request error: " + req["error"], flush=True)
+
 def compute_metrics(reqs, wall_seconds=None):
     valid = [r for r in reqs if r.get("valid")]
+    for r in reqs: _note_err(r)
     ttft = median([r.get("ttft_s") for r in valid])
     e2e = median([r.get("elapsed_s") for r in valid])
     decode = median([(r["completion_tokens"] - 1) / (r["elapsed_s"] - r["ttft_s"])
@@ -113,13 +134,13 @@ def compute_metrics(reqs, wall_seconds=None):
     return {"ttft_s": ttft, "decode_tok_s": decode, "e2e_tok_s": e2e,
             "aggregate_tok_s": aggregate, "valid_count": len(valid), "request_count": len(reqs)}
 
-def run_single(backend, prompt_req, config):
+def run_single(backend, prompt_req, config, model_alias="ninfer"):
     max_tokens = int(config.get("max_tokens", 512)); temperature = int(config.get("temperature", 0))
     runs = int(config.get("runs", 5)); warmup = int(config.get("warmup_requests", 1))
     for _ in range(warmup): backend.request(prompt_req["prompt"], 8, temperature)
-    return [backend.request(prompt_req["prompt"], max_tokens, temperature, i) for i in range(runs)]
+    return [backend.request(prompt_req["prompt"], max_tokens, temperature, i, model_alias=model_alias) for i in range(runs)]
 
-def run_concurrent(backend, prompt_req, config):
+def run_concurrent(backend, prompt_req, config, model_alias="ninfer"):
     max_tokens = int(config.get("max_tokens", 512)); temperature = int(config.get("temperature", 0))
     rounds = int(config.get("rounds", 5)); concurrency = int(config.get("concurrency", 4))
     retries = int(config.get("round_retries", 1))
@@ -128,7 +149,7 @@ def run_concurrent(backend, prompt_req, config):
         for attempt in range(retries + 1):
             start = time.monotonic()
             with ThreadPoolExecutor(max_workers=concurrency) as pool:
-                futures = [pool.submit(backend.request, prompt_req["prompt"], max_tokens, temperature, i)
+                futures = [pool.submit(backend.request, prompt_req["prompt"], max_tokens, temperature, i, model_alias=model_alias)
                            for i in range(concurrency)]
                 reqs = [f.result() for f in futures]
             wall = time.monotonic() - start
@@ -150,7 +171,10 @@ def main(argv=None):
     parser.add_argument("--dry-run", action="store_true", help="use mock backend; no server")
     parser.add_argument("--limit", type=int, default=None, help="first N prompts")
     parser.add_argument("--modes", default="single,concurrent", help="single,concurrent")
+    parser.add_argument("--verbose", action="store_true", help="print per-request errors")
     args = parser.parse_args(argv)
+    global VERBOSE
+    VERBOSE = args.verbose
     config = load_json(args.config)
     base_dir = Path(args.config).resolve().parent
     prompts_path = Path(config.get("prompts", "prompts/workloads.jsonl"))
@@ -179,10 +203,10 @@ def main(argv=None):
             for prompt in prompts:
                 print(f"  prompt {prompt['id']}", flush=True)
                 if "single" in modes:
-                    m = compute_metrics(run_single(backend, prompt, config), None)
+                    m = compute_metrics(run_single(backend, prompt, config, target.get("alias", "ninfer")), None)
                     print("    " + format_summary(target["id"], "single", m))
                 if "concurrent" in modes:
-                    results, walls = run_concurrent(backend, prompt, config)
+                    results, walls = run_concurrent(backend, prompt, config, target.get("alias", "ninfer"))
                     m = compute_metrics(results, statistics.median(walls) if walls else None)
                     print("    " + format_summary(target["id"], "concurrent", m))
     finally:
@@ -191,3 +215,9 @@ def main(argv=None):
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
+
+
+
+
+
+
